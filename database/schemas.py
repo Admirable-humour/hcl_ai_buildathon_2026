@@ -28,8 +28,8 @@ class Metadata(BaseModel):
     locale: Optional[str] = None
 
 
-class ChatRequest(BaseModel):
-    """Schema for incoming chat API requests"""
+class MessageRequest(BaseModel):
+    """Schema for incoming message API requests"""
     sessionId: str = Field(..., min_length=1, max_length=100)
     message: Message
     conversationHistory: List[Message] = Field(default_factory=list)
@@ -44,7 +44,7 @@ class ChatRequest(BaseModel):
         return v.strip()
 
 
-class ChatResponse(BaseModel):
+class MessageResponse(BaseModel):
     """Schema for API response"""
     status: Literal["success", "error"]
     reply: Optional[str] = None
@@ -55,21 +55,3 @@ class ChatResponse(BaseModel):
     def validate_message_content(cls, v: Optional[str]) -> Optional[str]:
         """Ensure either reply or error is present"""
         return v
-
-
-class ExtractedData(BaseModel):
-    """Schema for extracted scam data"""
-    bank_accounts: List[str] = Field(default_factory=list)
-    upi_ids: List[str] = Field(default_factory=list)
-    phishing_links: List[str] = Field(default_factory=list)
-    phone_numbers: List[str] = Field(default_factory=list)
-
-
-class SessionInfo(BaseModel):
-    """Schema for session information"""
-    sessionId: str
-    is_scam: bool
-    message_count: int
-    created_at: datetime
-    last_activity: datetime
-    extracted_data: Optional[ExtractedData] = None

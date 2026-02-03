@@ -1,9 +1,28 @@
 """
 Data extraction module for extracting bank details, UPI IDs, phishing links
+Uses both regex patterns and AI-based extraction
+
+Edge Cases to Handle:
+- Gemini API failures - fallback to regex-only extraction
+- Malformed data (partial phone numbers, invalid UPIs) - validation before storing
+- Unicode characters in data - proper encoding/decoding
 """
 import re
-from typing import List, Dict
+import os
+import json
+from typing import List, Dict, Optional
 from dataclasses import dataclass, field
+from google import genai
+
+
+# Configure Gemini API for AI-based extraction
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
+
+# Initialize Gemini client
+_client = None
+if GEMINI_API_KEY:
+    _client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 @dataclass
@@ -53,7 +72,7 @@ class ScamData:
 
 
 class DataExtractor:
-    """Extract scam-related data from text messages"""
+    """Extract scam-related data from text messages using regex and AI"""
     
     # Regex patterns for different data types
     BANK_ACCOUNT_PATTERN = r'\b\d{9,18}\b'  # 9-18 digit bank account numbers
@@ -66,12 +85,69 @@ class DataExtractor:
         """Initialize the data extractor"""
         self.data = ScamData()
     
-    def extract_from_text(self, text: str) -> ScamData:
+    def _extract_with_ai(self, text: str) -> ScamData:
         """
-        Extract all types of data from a single text message
+        Use AI to extract scam-related data from text
         
         Args:
             text: The message text to analyze
+            
+        Returns:
+            ScamData object with AI-extracted information
+        """
+        if not _client:
+            return ScamData()
+        
+        try:
+            prompt = f"""Extract scam-related information from this message:
+"{text}"
+
+Extract and return ONLY a JSON object with these fields:
+{{
+  "bank_accounts": ["list of account numbers"],
+  "upi_ids": ["list of UPI IDs like user@bank"],
+  "phishing_links": ["list of URLs"],
+  "phone_numbers": ["list of phone numbers"]
+}}
+
+If nothing found for a category, use empty list []."""
+
+            response = _client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config={
+                    "temperature": 0.1,
+                    "max_output_tokens": 200,
+                }
+            )
+            
+            if response and response.text:
+                result = json.loads(response.text.strip())
+                ai_data = ScamData()
+                
+                for account in result.get("bank_accounts", []):
+                    ai_data.add_bank_account(str(account))
+                for upi in result.get("upi_ids", []):
+                    ai_data.add_upi_id(str(upi))
+                for link in result.get("phishing_links", []):
+                    ai_data.add_phishing_link(str(link))
+                for phone in result.get("phone_numbers", []):
+                    ai_data.add_phone_number(str(phone))
+                
+                return ai_data
+        
+        except Exception as e:
+            print(f"Error in AI extraction: {e}")
+        
+        return ScamData()
+    
+    def extract_from_text(self, text: str, use_ai: bool = True) -> ScamData:
+        """
+        Extract all types of data from a single text message using hybrid approach
+        
+        Args:
+            text: The message text to analyze
+            use_ai: Whether to use AI extraction in addition to regex
             
         Returns:
             ScamData object containing extracted information
@@ -79,6 +155,7 @@ class DataExtractor:
         if not text:
             return self.data
         
+        # Step 1: Regex-based extraction (fast, reliable)
         # Extract bank account numbers
         bank_accounts = re.findall(self.BANK_ACCOUNT_PATTERN, text)
         for account in bank_accounts:
@@ -102,6 +179,20 @@ class DataExtractor:
             # Clean up the phone number
             clean_phone = re.sub(r'[\s-]', '', phone)
             self.data.add_phone_number(clean_phone)
+        
+        # Step 2: AI-based extraction (for complex/obfuscated data)
+        if use_ai and _client:
+            ai_data = self._extract_with_ai(text)
+            
+            # Merge AI results with regex results
+            for account in ai_data.bank_accounts:
+                self.data.add_bank_account(account)
+            for upi in ai_data.upi_ids:
+                self.data.add_upi_id(upi)
+            for link in ai_data.phishing_links:
+                self.data.add_phishing_link(link)
+            for phone in ai_data.phone_numbers:
+                self.data.add_phone_number(phone)
         
         return self.data
     
