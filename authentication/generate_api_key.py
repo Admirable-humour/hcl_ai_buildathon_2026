@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 Utility script to generate API keys for the honeypot system
-Usage: python generate_api_key.py [key_name]
+Usage: python authentication/generate_api_key.py [key_name]
 """
 
 import sys
-from authentication.auth import create_api_key
+from auth import create_api_key
 
 
 def main():

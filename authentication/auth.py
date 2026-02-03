@@ -1,34 +1,64 @@
 """
 API authentication and security module
 Handles API key generation, hashing, and verification with security best practices
+
+Edge Cases to Handle:
+- Concurrent access to API keys file (file locking)
+- Corrupted API keys file (validation and recovery)
+- Missing API keys file (auto-create)
 """
 import hashlib
 import secrets
 import os
+import json
 from datetime import datetime
-from typing import Optional, Tuple
-import sqlite3
-from contextlib import contextmanager
+from typing import Optional, Tuple, Dict
+from pathlib import Path
+import fcntl  # For file locking on Unix systems
 
 
-DATABASE_PATH = os.getenv("DATABASE_PATH", "honeypot.db")
 # Use environment variable for additional security salt
 SECRET_SALT = os.getenv("SECRET_SALT", "default_salt_change_in_production")
 
+# Store API keys in a secure file outside of database to avoid security risks
+# This file should have restricted permissions (600) in production
+API_KEYS_FILE = os.getenv("API_KEYS_FILE", ".api_keys.json")
 
-@contextmanager
-def get_db_connection():
-    """Context manager for database connections"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+
+def _ensure_api_keys_file():
+    """Ensure API keys file exists with proper structure"""
+    if not os.path.exists(API_KEYS_FILE):
+        with open(API_KEYS_FILE, 'w') as f:
+            json.dump({"keys": {}}, f)
+        # Set restrictive permissions (owner read/write only)
+        os.chmod(API_KEYS_FILE, 0o600)
+
+
+def _read_api_keys() -> Dict:
+    """Read API keys from secure file with locking"""
+    _ensure_api_keys_file()
+    with open(API_KEYS_FILE, 'r') as f:
+        # Lock file for reading
+        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        try:
+            data = json.load(f)
+            return data.get("keys", {})
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def _write_api_keys(keys: Dict):
+    """Write API keys to secure file with locking"""
+    _ensure_api_keys_file()
+    with open(API_KEYS_FILE, 'r+') as f:
+        # Lock file for writing
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            f.seek(0)
+            json.dump({"keys": keys}, f, indent=2)
+            f.truncate()
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def generate_api_key() -> str:
@@ -61,7 +91,7 @@ def hash_api_key(api_key: str) -> str:
 
 def create_api_key(key_name: Optional[str] = None) -> Tuple[str, bool]:
     """
-    Create a new API key and store its hash in the database
+    Create a new API key and store its hash in secure file
     
     Args:
         key_name: Optional descriptive name for the API key
@@ -74,12 +104,19 @@ def create_api_key(key_name: Optional[str] = None) -> Tuple[str, bool]:
         api_key = generate_api_key()
         key_hash = hash_api_key(api_key)
         
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO api_keys (key_hash, key_name, is_active)
-                VALUES (?, ?, 1)
-            ''', (key_hash, key_name))
+        # Read existing keys
+        keys = _read_api_keys()
+        
+        # Add new key
+        keys[key_hash] = {
+            "name": key_name or "default",
+            "created_at": datetime.now().isoformat(),
+            "last_used": None,
+            "is_active": True
+        }
+        
+        # Write back to file
+        _write_api_keys(keys)
         
         return api_key, True
     except Exception as e:
@@ -108,24 +145,16 @@ def verify_api_key(api_key: str) -> bool:
     try:
         key_hash = hash_api_key(api_key)
         
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT id, is_active FROM api_keys 
-                WHERE key_hash = ? AND is_active = 1
-            ''', (key_hash,))
-            
-            row = cursor.fetchone()
-            
-            if row:
-                # Update last_used timestamp
-                cursor.execute('''
-                    UPDATE api_keys SET last_used = CURRENT_TIMESTAMP 
-                    WHERE id = ?
-                ''', (row['id'],))
-                return True
-            
-            return False
+        # Read API keys
+        keys = _read_api_keys()
+        
+        if key_hash in keys and keys[key_hash].get("is_active", False):
+            # Update last_used timestamp
+            keys[key_hash]["last_used"] = datetime.now().isoformat()
+            _write_api_keys(keys)
+            return True
+        
+        return False
     except Exception as e:
         print(f"Error verifying API key: {e}")
         return False
@@ -144,14 +173,15 @@ def revoke_api_key(api_key: str) -> bool:
     try:
         key_hash = hash_api_key(api_key)
         
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE api_keys SET is_active = 0 
-                WHERE key_hash = ?
-            ''', (key_hash,))
-            
-            return cursor.rowcount > 0
+        # Read API keys
+        keys = _read_api_keys()
+        
+        if key_hash in keys:
+            keys[key_hash]["is_active"] = False
+            _write_api_keys(keys)
+            return True
+        
+        return False
     except Exception as e:
         print(f"Error revoking API key: {e}")
         return False

@@ -1,10 +1,15 @@
 """
 SQLite database initialization and models
+
+Edge Cases to Handle:
+- Database file locked (concurrent writes) - handled by SQLite locks
+- Database corruption - implement backup/recovery strategy
+- Disk space full - implement size limits and cleanup policies
 """
 import sqlite3
 import json
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from contextlib import contextmanager
 import os
 
@@ -27,7 +32,9 @@ def init_database():
             last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             channel TEXT,
             language TEXT,
-            locale TEXT
+            locale TEXT,
+            scam_confidence REAL DEFAULT 0.0,
+            callback_sent BOOLEAN DEFAULT 0
         )
     ''')
     
@@ -56,22 +63,21 @@ def init_database():
         )
     ''')
     
-    # API keys table - stores authentication credentials
+    # Suspicious keywords table - stores matched scam keywords for faster detection
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS api_keys (
+        CREATE TABLE IF NOT EXISTS suspicious_keywords (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            key_hash TEXT UNIQUE NOT NULL,
-            key_name TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_used TIMESTAMP,
-            is_active BOOLEAN DEFAULT 1
+            session_id TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            matched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (session_id) REFERENCES sessions(session_id)
         )
     ''')
     
     # Create indices for better query performance
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_extracted_session ON extracted_data(session_id)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_keywords_session ON suspicious_keywords(session_id)')
     
     conn.commit()
     conn.close()
@@ -109,13 +115,15 @@ class SessionManager:
             ''', (session_id, channel, language, locale))
     
     @staticmethod
-    def update_scam_status(session_id: str, is_scam: bool):
-        """Update scam detection status for a session"""
+    def update_scam_status(session_id: str, is_scam: bool, confidence: float = 0.0):
+        """Update scam detection status and confidence for a session"""
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                UPDATE sessions SET is_scam = ? WHERE session_id = ?
-            ''', (is_scam, session_id))
+                UPDATE sessions 
+                SET is_scam = ?, scam_confidence = ?
+                WHERE session_id = ?
+            ''', (is_scam, confidence, session_id))
     
     @staticmethod
     def increment_message_count(session_id: str):
@@ -125,6 +133,17 @@ class SessionManager:
             cursor.execute('''
                 UPDATE sessions 
                 SET message_count = message_count + 1, last_activity = CURRENT_TIMESTAMP
+                WHERE session_id = ?
+            ''', (session_id,))
+    
+    @staticmethod
+    def mark_callback_sent(session_id: str):
+        """Mark that callback has been sent for this session"""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE sessions 
+                SET callback_sent = 1
                 WHERE session_id = ?
             ''', (session_id,))
     
@@ -184,6 +203,40 @@ class ExtractedDataManager:
                 ''', (session_id, data_type, data_value))
     
     @staticmethod
+    def save_extracted_data_batch(session_id: str, data: List[Tuple[str, str]]):
+        """
+        Save multiple extracted data items in a single transaction
+        Optimizes database writes by batching operations
+        
+        Args:
+            session_id: The session ID
+            data: List of tuples (data_type, data_value)
+        """
+        if not data:
+            return
+            
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Prepare data for batch insert, avoiding duplicates
+            to_insert = []
+            for data_type, data_value in data:
+                cursor.execute('''
+                    SELECT id FROM extracted_data 
+                    WHERE session_id = ? AND data_type = ? AND data_value = ?
+                ''', (session_id, data_type, data_value))
+                
+                if not cursor.fetchone():
+                    to_insert.append((session_id, data_type, data_value))
+            
+            # Batch insert
+            if to_insert:
+                cursor.executemany('''
+                    INSERT INTO extracted_data (session_id, data_type, data_value)
+                    VALUES (?, ?, ?)
+                ''', to_insert)
+    
+    @staticmethod
     def get_extracted_data(session_id: str) -> Dict[str, List[str]]:
         """Retrieve all extracted data for a session"""
         with get_db_connection() as conn:
@@ -197,7 +250,8 @@ class ExtractedDataManager:
                 'bank_accounts': [],
                 'upi_ids': [],
                 'phishing_links': [],
-                'phone_numbers': []
+                'phone_numbers': [],
+                'suspicious_keywords': []
             }
             
             for row in cursor.fetchall():
@@ -207,6 +261,44 @@ class ExtractedDataManager:
                     result[data_type].append(data_value)
             
             return result
+
+
+class SuspiciousKeywordManager:
+    """Manages suspicious keywords matched in conversations"""
+    
+    @staticmethod
+    def save_keywords_batch(session_id: str, keywords: List[str]):
+        """
+        Save multiple keywords in a single transaction
+        
+        Args:
+            session_id: The session ID
+            keywords: List of matched keywords
+        """
+        if not keywords:
+            return
+            
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Insert keywords (allow duplicates as they show frequency)
+            data = [(session_id, keyword) for keyword in keywords]
+            cursor.executemany('''
+                INSERT INTO suspicious_keywords (session_id, keyword)
+                VALUES (?, ?)
+            ''', data)
+    
+    @staticmethod
+    def get_keywords(session_id: str) -> List[str]:
+        """Get all matched keywords for a session"""
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT keyword FROM suspicious_keywords 
+                WHERE session_id = ? ORDER BY matched_at ASC
+            ''', (session_id,))
+            
+            return [row['keyword'] for row in cursor.fetchall()]
 
 
 # Initialize database on module import
