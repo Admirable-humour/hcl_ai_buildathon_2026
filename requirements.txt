@@ -6,4 +6,4 @@ requests
 google-genai
 python-dateutil
 portalocker
-pywin32
+#pywin32 -- Uncomment this line if locally deploying on a Windows system.
