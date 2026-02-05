@@ -182,13 +182,6 @@ async def message_endpoint(
                 )
                 session = SessionManager.get_session(session_id)
             
-            # Check if callback already sent for this session
-            if session and session.get("callback_sent"):
-                return MessageResponse(
-                    status="success",
-                    reply="thank you for the information."
-                )
-            
             # Build conversation history for context
             conversation_texts = [msg.text for msg in request.conversationHistory]
             

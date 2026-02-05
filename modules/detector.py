@@ -113,8 +113,9 @@ def _safe_json_load(s: str) -> Optional[dict]:
 def _match_patterns(text_lower: str, patterns: List[str]) -> List[str]:
     matched = []
     for p in patterns:
-        if re.search(p, text_lower):
-            matched.append(p)
+        match = re.search(p, text_lower)
+        if match:
+            matched.append(match.group(0))
     return matched
 
 def detect_scam(text: str, threshold: float = 0.5) -> Tuple[bool, float, List[str]]:
