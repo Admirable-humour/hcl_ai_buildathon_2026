@@ -21,7 +21,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-3-27b-it")
 
 # Timeout configuration
-EXTRACTOR_TIMEOUT = 8  # 8 second timeout for extraction
+EXTRACTOR_TIMEOUT = 10  # 10 second timeout for extraction
 
 # Initialize Gemini client
 _client = None
@@ -103,17 +103,26 @@ class DataExtractor:
             return ScamData()
         
         try:
-            prompt = f"""Extract from: "{text}"
-JSON: {{"bank_accounts": [], "upi_ids": [], "phishing_links": [], "phone_numbers": []}}
-Empty [] if none."""
+            prompt = f"""Extract scam-related information from this message:
+"{text}"
+
+Extract and return ONLY a JSON object with these fields:
+{{
+  "bank_accounts": ["list of account numbers"],
+  "upi_ids": ["list of UPI IDs like user@bank"],
+  "phishing_links": ["list of URLs"],
+  "phone_numbers": ["list of phone numbers"]
+}}
+
+If nothing found for a category, use empty list []."""
 
             start_time = time.time()
             response = _client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=prompt,
                 config={
-                    "temperature": 0.05,  # Very low for precise extraction
-                    "max_output_tokens": 100,  # Reduced from 200 for speed
+                    "temperature": 0.1,  # Low temperature for precise extraction
+                    "max_output_tokens": 150,  # Adequate for extraction results
                 }
             )
             

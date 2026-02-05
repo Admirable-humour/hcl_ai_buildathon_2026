@@ -19,7 +19,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemma-3-27b-it" #Higer Parameter model for better analysis and detection.
 
 # Timeout configuration
-DETECTOR_TIMEOUT = 8  # 8 second timeout for detection
+DETECTOR_TIMEOUT = 10  # 10 second timeout for detection
 
 # Initialize Gemini client
 _client = None
@@ -280,9 +280,20 @@ def detect_scam_with_ai(text: str, conversation_history: Optional[List[str]] = N
     
     try:
         # Create prompt for scam detection
-        prompt = f"""Analyze for scam: phishing, fraud, urgency tactics, impersonation, sensitive info requests.
+        prompt = f"""Analyze this message and determine if it's a scam attempt. Consider:
+- Phishing attempts
+- Financial fraud
+- Urgency tactics
+- Impersonation of authorities
+- Request for sensitive information
+- Any other type of General scam trying to extract sensitive information or financial details from the user.
+
+Consider various scam types occurring in India and analyze the message word by word.
+
 Message: "{text}"
-JSON only: {{"is_scam": true/false, "confidence": 0.0-1.0, "reason": "brief"}}"""
+
+Respond with ONLY a JSON object:
+{{"is_scam": true/false, "confidence": 0.0-1.0, "reason": "brief explanation in one or two sentences."}}"""
 
         # Only include last 2 messages for context to reduce token count
         if conversation_history:
@@ -294,8 +305,8 @@ JSON only: {{"is_scam": true/false, "confidence": 0.0-1.0, "reason": "brief"}}""
             model=GEMINI_MODEL,
             contents=prompt,
             config={
-                "temperature": 0.05,  # Very low for consistent detection
-                "max_output_tokens": 50,  # Reduced from 100 for speed
+                "temperature": 0.1,  # Low temperature for consistent detection
+                "max_output_tokens": 100,  # Sufficient for detailed analysis
             }
         )
         
