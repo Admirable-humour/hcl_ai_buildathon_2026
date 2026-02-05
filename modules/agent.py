@@ -201,8 +201,8 @@ Example responses:
                 config={
                     "temperature": 0.65,  # Balanced for natural yet consistent responses
                     "top_p": 0.9,  # Reduced for faster sampling
-                    "top_k": 30,  # Balanced for quality and speed
-                    "max_output_tokens": 80,  # Keep responses reasonably short
+                    "top_k": 25,  # Reduced for faster generation
+                    "max_output_tokens": 60,  # Keep responses reasonably short
                 }
             )
             

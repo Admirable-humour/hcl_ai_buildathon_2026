@@ -293,8 +293,8 @@ Respond with ONLY a JSON object: {{"is_scam": true/false, "confidence": 0.0-1.0,
             model=GEMINI_MODEL,
             contents=prompt,
             config={
-                "temperature": 0.1,  # Low temperature for consistent detection
-                "max_output_tokens": 100,  # Sufficient for detailed analysis
+                "temperature": 0.08,  # Low temperature for consistent detection
+                "max_output_tokens": 80,  # Sufficient for detailed analysis
             }
         )
         

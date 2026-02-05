@@ -112,7 +112,7 @@ Use empty [] if none found. Analyse the messages word by word but be fast and pr
                 model=GEMINI_MODEL,
                 contents=prompt,
                 config={
-                    "temperature": 0.1,  # Low temperature for precise extraction
+                    "temperature": 0.08,  # Low temperature for precise extraction
                     "max_output_tokens": 150,  # Adequate for extraction results
                 }
             )
