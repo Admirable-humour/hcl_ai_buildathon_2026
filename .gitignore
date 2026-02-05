@@ -2,3 +2,8 @@
 .venv/
 __pycache__/
 render.yaml
+honeypot.db
+.api_keys.json
+*.pyc
+*.pyo
+.DS_Store

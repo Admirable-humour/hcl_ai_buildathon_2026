@@ -5,3 +5,5 @@ python-dotenv
 requests
 google-genai
 python-dateutil
+portalocker
+pywin32
