@@ -10,6 +10,7 @@ Edge Cases to Handle:
 import re
 import os
 import json
+import time
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 from google import genai
@@ -18,6 +19,9 @@ from google import genai
 # Configure Gemini API for AI-based extraction
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-3-27b-it")
+
+# Timeout configuration
+EXTRACTOR_TIMEOUT = 10  # 10 second timeout for extraction
 
 # Initialize Gemini client
 _client = None
@@ -99,27 +103,24 @@ class DataExtractor:
             return ScamData()
         
         try:
-            prompt = f"""Extract scam-related information from this message:
-"{text}"
+            prompt = f"""Extract scam data from: "{text}"
+Return JSON: {{"bank_accounts": [], "upi_ids": [], "phishing_links": [], "phone_numbers": []}}
+Use empty [] if none found. Analyse the messages word by word but be fast and precise with your output."""
 
-Extract and return ONLY a JSON object with these fields:
-{{
-  "bank_accounts": ["list of account numbers"],
-  "upi_ids": ["list of UPI IDs like user@bank"],
-  "phishing_links": ["list of URLs"],
-  "phone_numbers": ["list of phone numbers"]
-}}
-
-If nothing found for a category, use empty list []."""
-
+            start_time = time.time()
             response = _client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=prompt,
                 config={
-                    "temperature": 0.1,
-                    "max_output_tokens": 200,
+                    "temperature": 0.1,  # Low temperature for precise extraction
+                    "max_output_tokens": 150,  # Adequate for extraction results
                 }
             )
+            
+            elapsed = time.time() - start_time
+            if elapsed > EXTRACTOR_TIMEOUT:
+                print(f"Extractor AI took {elapsed:.2f}s, timeout")
+                return ScamData()
             
             if response and response.text:
                 result = json.loads(response.text.strip())
