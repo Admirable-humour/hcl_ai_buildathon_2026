@@ -7,7 +7,6 @@ Edge Cases to Handle:
 - Missing environment variables - graceful degradation with fallbacks
 """
 from fastapi import FastAPI, HTTPException, Header, Depends
-from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from typing import Optional, AsyncGenerator
 import os
@@ -181,6 +180,14 @@ async def message_endpoint(
                     locale=request.metadata.locale if request.metadata else None
                 )
                 session = SessionManager.get_session(session_id)
+            
+            # Check if callback already sent - if so, provide closing response
+            if session and session.get("callback_sent"):
+                # Agent should provide a natural disengagement response
+                return MessageResponse(
+                    status="success",
+                    reply="ok let me verify this with my bank first. i will get back to you. thank you."
+                )
             
             # Build conversation history for context
             conversation_texts = [msg.text for msg in request.conversationHistory]

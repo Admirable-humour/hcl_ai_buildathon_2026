@@ -30,9 +30,9 @@ if GEMINI_API_KEY:
 # Common scam keywords and phrases (case-insensitive)
 PRIZE_PATTERNS = [
     r"\bcongratulations?\b",
-    r"\bwinner\b",
+    r"\bwinners?\b",
     r"\blottery\b",
-    r"\breward\b",
+    r"\brewards?\b",
     r"\bcashback\b",
     r"won.*prize",
     r"claim.*prize",
@@ -40,52 +40,50 @@ PRIZE_PATTERNS = [
 
 # Strong patterns: alone should be high-confidence
 STRONG_PATTERNS = [
-    r"\botp\b",
-    r"\b(mpin|pin)\b",
-    r"\bpassword\b",
+    r"\botps?\b",
+    r"\b(mpin|pin)s?\b",
+    r"\bpasswords?\b",
     r"\bcvv\b",
     r"\bbit\.ly\b",
     r"\btinyurl\b",
-    r"\bupi\b",
+    r"\bupis?\b",
     r"\bifsc\b",
-    r"\baccount\b.*\bnumber\b",
+    r"\baccounts?\b.*\bnumbers?\b",
 ]
 
 # Weak patterns: should NOT alone classify as scam (reduce false positives)
 WEAK_PATTERNS = [
-    r"\burgent\b",
-    r"\bimmediate\b",
+    r"\burgent(ly)?\b",
+    r"\bimmediate(ly)?\b",
     r"\basap\b",
     r"\bnow\b",
     r"\btoday\b",
-    r"\bexpire\b",
-    r"\bexpired\b",
-    r"\bexpiring\b",
+    r"\bexpir(e|ed|ing)\b",
     r"\bkindly\b",
     r"do.*needful",
     r"revert.*back",
     r"\bofficial\b.*\bnotice\b",
     r"\bbank\b.*\bnotification\b",
-    r"\brefund\b",
+    r"\brefunds?\b",
 ]
 
 # Action-request patterns (often scam when paired with weak/strong)
 ACTION_PATTERNS = [
     r"https?://[^\s)\]}>,\"']+",
-    r"click.*link",
-    r"verify.*link",
-    r"update.*detail",
-    r"share.*detail",
-    r"provide.*detail",
-    r"send.*detail",
-    r"confirm.*otp",
-    r"verify.*account",
-    r"confirm.*account",
-    r"update.*account",
-    r"account.*block",
-    r"account.*suspend",
-    r"account.*deactivate",
-    r"account.*close",
+    r"click.*links?",
+    r"verify.*links?",
+    r"update.*details?",
+    r"share.*details?",
+    r"provide.*details?",
+    r"send.*details?",
+    r"confirm.*otps?",
+    r"verify.*accounts?",
+    r"confirm.*accounts?",
+    r"update.*accounts?",
+    r"accounts?.*blocks?",
+    r"accounts?.*suspends?",
+    r"accounts?.*deactivates?",
+    r"accounts?.*closes?",
 ]
 
 def _safe_json_load(s: str) -> Optional[dict]:
