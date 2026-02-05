@@ -18,7 +18,7 @@ from google import genai
 
 # Configure Gemini API for AI-based extraction
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-3-27b-it")
+GEMINI_MODEL = "gemma-3-27b-it"
 
 # Timeout configuration
 EXTRACTOR_TIMEOUT = 10  # 10 second timeout for extraction
