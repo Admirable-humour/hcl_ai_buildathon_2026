@@ -18,7 +18,7 @@ from google import genai
 
 # Configure Gemini API for AI-based extraction
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-3-27b-it")
+GEMINI_MODEL = "gemma-3-27b-it"
 
 # Timeout configuration
 EXTRACTOR_TIMEOUT = 10  # 10 second timeout for extraction
@@ -80,7 +80,7 @@ class DataExtractor:
     
     # Regex patterns for different data types
     BANK_ACCOUNT_PATTERN = r'\b\d{9,18}\b'  # 9-18 digit bank account numbers
-    UPI_ID_PATTERN = r'\b[\w\.-]+@[\w\.-]+\b'  # UPI ID format: user@bank
+    UPI_ID_PATTERN = r'[\w\.-]+@[\w\.-]+'  # UPI ID format: user@bank
     URL_PATTERN = r'https?://[^\s]+|www\.[^\s]+|bit\.ly/[^\s]+|tinyurl\.com/[^\s]+'
     PHONE_PATTERN = r'\b(?:\+91[\s-]?)?[6-9]\d{9}\b'  # Indian phone numbers
     IFSC_PATTERN = r'\b[A-Z]{4}0[A-Z0-9]{6}\b'  # IFSC code pattern
@@ -123,7 +123,13 @@ Use empty [] if none found. Analyse the messages word by word but be fast and pr
                 return ScamData()
             
             if response and response.text:
-                result = json.loads(response.text.strip())
+                # Clean response text - remove markdown code blocks
+                text_clean = response.text.strip()
+                text_clean = re.sub(r'^```(?:json)?\s*', '', text_clean)
+                text_clean = re.sub(r'\s*```$', '', text_clean)
+                
+                # Try to parse JSON
+                result = json.loads(text_clean)
                 ai_data = ScamData()
                 
                 for account in result.get("bank_accounts", []):
@@ -137,6 +143,8 @@ Use empty [] if none found. Analyse the messages word by word but be fast and pr
                 
                 return ai_data
         
+        except json.JSONDecodeError as e:
+            print(f"Error in AI extraction: {e}")
         except Exception as e:
             print(f"Error in AI extraction: {e}")
         
