@@ -16,7 +16,7 @@ from google import genai
 
 # Configure Gemini API for AI-based detection
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemma-3-27b-it" #Higer Parameter model for better analysis and detection.
+GEMINI_MODEL = "gemma-3-27b-it" #Higher Parameter model for better analysis and detection.
 
 # Timeout configuration
 DETECTOR_TIMEOUT = 10  # 10 second timeout for detection
@@ -280,7 +280,7 @@ def detect_scam_with_ai(text: str, conversation_history: Optional[List[str]] = N
     
     try:
         # Create prompt for scam detection
-        prompt = f"""Analyze if this message is a scam attempt involving phishing, financial fraud, urgency tactics, impersonation, or requests for sensitive information, considering various scam types occurring in India. Analyze the message word by word. Message: "{text}"
+        prompt = f"""Analyze if this message is a scam attempt involving phishing, financial fraud, urgency tactics, impersonation, or requests for sensitive information, considering various scam types occurring in India. Analyze the message word by word carefully without missing any detail but be fast and precise with your output. Message: "{text}"
 Respond with ONLY a JSON object: {{"is_scam": true/false, "confidence": 0.0-1.0, "reason": "brief explanation in one or two sentences."}}"""
 
         # Only include last 2 messages for context to reduce token count

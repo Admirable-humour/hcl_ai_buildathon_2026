@@ -105,7 +105,7 @@ class DataExtractor:
         try:
             prompt = f"""Extract scam data from: "{text}"
 Return JSON: {{"bank_accounts": [], "upi_ids": [], "phishing_links": [], "phone_numbers": []}}
-Use empty [] if none found."""
+Use empty [] if none found. Analyse the messages word by word but be fast and precise with your output."""
 
             start_time = time.time()
             response = _client.models.generate_content(
