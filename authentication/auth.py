@@ -3,62 +3,39 @@ API authentication and security module
 Handles API key generation, hashing, and verification with security best practices
 
 Edge Cases to Handle:
-- Concurrent access to API keys file (file locking)
-- Corrupted API keys file (validation and recovery)
-- Missing API keys file (auto-create)
+- Missing or malformed API_KEYS_JSON environment variable
+- Concurrent access (read-only from env vars, no locking needed)
+- Invalid JSON in environment variable (validation and recovery)
 """
 import hashlib
 import secrets
 import os
 import json
 from datetime import datetime
-from typing import Optional, Tuple, Dict
-from pathlib import Path
-import portalocker  # Cross-platform file locking (works on Windows, Linux, macOS)
+from typing import Optional, Tuple, Dict, List
+import hmac
 
 
-# Use environment variable for additional security salt
-SECRET_SALT = os.getenv("SECRET_SALT", "default_salt_change_in_production")
-
-# Store API keys in a secure file outside of database to avoid security risks
-# This file should have restricted permissions (600) in production
-API_KEYS_FILE = os.getenv("API_KEYS_FILE", ".api_keys.json")
+API_KEYS_JSON_ENV = "API_KEYS_JSON"
 
 
-def _ensure_api_keys_file():
-    """Ensure API keys file exists with proper structure"""
-    if not os.path.exists(API_KEYS_FILE):
-        with open(API_KEYS_FILE, 'w') as f:
-            json.dump({"keys": {}}, f)
-        # Set restrictive permissions (owner read/write only)
-        os.chmod(API_KEYS_FILE, 0o600)
-
-
-def _read_api_keys() -> Dict:
-    """Read API keys from secure file with locking"""
-    _ensure_api_keys_file()
-    with open(API_KEYS_FILE, 'r') as f:
-        # Lock file for reading (shared lock)
-        portalocker.lock(f, portalocker.LOCK_SH)
-        try:
-            data = json.load(f)
-            return data.get("keys", {})
-        finally:
-            portalocker.unlock(f)
-
-
-def _write_api_keys(keys: Dict):
-    """Write API keys to secure file with locking"""
-    _ensure_api_keys_file()
-    with open(API_KEYS_FILE, 'r+') as f:
-        # Lock file for writing (exclusive lock)
-        portalocker.lock(f, portalocker.LOCK_EX)
-        try:
-            f.seek(0)
-            json.dump({"keys": keys}, f, indent=2)
-            f.truncate()
-        finally:
-            portalocker.unlock(f)
+def _get_api_keys_from_env() -> Dict:
+    """
+    Retrieve API keys from environment variable
+    
+    Returns:
+        Dictionary of API key hashes and their metadata (including unique salt)
+    """
+    try:
+        api_keys_json = os.getenv(API_KEYS_JSON_ENV, '{"keys": {}}')
+        data = json.loads(api_keys_json)
+        return data.get("keys", {})
+    except json.JSONDecodeError as e:
+        print(f"Error parsing API_KEYS_JSON: {e}. Using empty keys dict.")
+        return {}
+    except Exception as e:
+        print(f"Error reading API keys from environment: {e}")
+        return {}
 
 
 def generate_api_key() -> str:
@@ -69,59 +46,64 @@ def generate_api_key() -> str:
     return secrets.token_hex(32)
 
 
-def hash_api_key(api_key: str) -> str:
+def generate_salt() -> str:
     """
-    Hash an API key using SHA-256 with salt for secure storage
+    Generate a unique cryptographic salt for an API key
+    Returns a 64-character hexadecimal string
+    """
+    return secrets.token_hex(32)
+
+
+def hash_api_key_with_salt(api_key: str, salt: str) -> str:
+    """
+    Hash an API key using HMAC-SHA256 with a unique salt
     
     Security measures:
-    - Uses SHA-256 hashing algorithm
-    - Adds secret salt to prevent rainbow table attacks
+    - Uses HMAC-SHA256 hashing algorithm
+    - Each key has its own unique salt (stored with the hash)
+    - Provides constant-time comparison protection
     - Encodes in UTF-8 before hashing
     
     Args:
         api_key: The raw API key to hash
+        salt: The unique salt for this specific key
         
     Returns:
         Hexadecimal hash string
     """
-    # Combine API key with secret salt for additional security
-    salted_key = f"{api_key}{SECRET_SALT}".encode('utf-8')
-    return hashlib.sha256(salted_key).hexdigest()
+    # Use HMAC-SHA256 with the unique salt
+    return hmac.new(
+        salt.encode('utf-8'),
+        api_key.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
 
 
-def create_api_key(key_name: Optional[str] = None) -> Tuple[str, bool]:
+def generate_api_key_with_hash(key_name: Optional[str] = None) -> Tuple[str, str, str, Dict]:
     """
-    Create a new API key and store its hash in secure file
+    Generate a new API key with its own unique salt and hash
+    
+    This function is used locally to generate keys that will be added to environment variables
     
     Args:
         key_name: Optional descriptive name for the API key
         
     Returns:
-        Tuple of (api_key, success)
-        The raw API key is returned only once and should be stored securely by the user
+        Tuple of (api_key, salt, key_hash, metadata_dict)
     """
-    try:
-        api_key = generate_api_key()
-        key_hash = hash_api_key(api_key)
-        
-        # Read existing keys
-        keys = _read_api_keys()
-        
-        # Add new key
-        keys[key_hash] = {
-            "name": key_name or "default",
-            "created_at": datetime.now().isoformat(),
-            "last_used": None,
-            "is_active": True
-        }
-        
-        # Write back to file
-        _write_api_keys(keys)
-        
-        return api_key, True
-    except Exception as e:
-        print(f"Error creating API key: {e}")
-        return "", False
+    api_key = generate_api_key()
+    salt = generate_salt()
+    key_hash = hash_api_key_with_salt(api_key, salt)
+    
+    metadata = {
+        "salt": salt,  # Store the unique salt with the hash
+        "name": key_name or "default",
+        "created_at": datetime.now().isoformat(),
+        "last_used": None,
+        "is_active": True
+    }
+    
+    return api_key, salt, key_hash, metadata
 
 
 def verify_api_key(api_key: str) -> bool:
@@ -129,9 +111,10 @@ def verify_api_key(api_key: str) -> bool:
     Verify if an API key is valid and active
     
     Security measures:
-    - Uses constant-time comparison to prevent timing attacks
+    - Uses constant-time comparison via HMAC to prevent timing attacks
+    - Retrieves the unique salt for each key from storage
     - Checks if key is marked as active
-    - Updates last_used timestamp on successful verification
+    - Read-only operation (no state changes)
     
     Args:
         api_key: The raw API key to verify
@@ -143,16 +126,26 @@ def verify_api_key(api_key: str) -> bool:
         return False
     
     try:
-        key_hash = hash_api_key(api_key)
+        # Read all API keys from environment
+        keys = _get_api_keys_from_env()
         
-        # Read API keys
-        keys = _read_api_keys()
-        
-        if key_hash in keys and keys[key_hash].get("is_active", False):
-            # Update last_used timestamp
-            keys[key_hash]["last_used"] = datetime.now().isoformat()
-            _write_api_keys(keys)
-            return True
+        # Try to match the API key against each stored hash
+        # Each hash was created with its own unique salt
+        for key_hash, metadata in keys.items():
+            if not metadata.get("is_active", False):
+                continue
+            
+            # Get the unique salt for this key
+            salt = metadata.get("salt")
+            if not salt:
+                continue
+            
+            # Hash the provided API key with this key's salt
+            computed_hash = hash_api_key_with_salt(api_key, salt)
+            
+            # Constant-time comparison
+            if hmac.compare_digest(computed_hash, key_hash):
+                return True
         
         return False
     except Exception as e:
@@ -160,31 +153,27 @@ def verify_api_key(api_key: str) -> bool:
         return False
 
 
-def revoke_api_key(api_key: str) -> bool:
+def list_api_keys() -> List[Dict]:
     """
-    Revoke an API key by marking it as inactive
+    List all API keys with metadata (excluding hashes and salts)
     
-    Args:
-        api_key: The raw API key to revoke
-        
     Returns:
-        True if successfully revoked, False otherwise
+        List of dictionaries containing key metadata
     """
     try:
-        key_hash = hash_api_key(api_key)
-        
-        # Read API keys
-        keys = _read_api_keys()
-        
-        if key_hash in keys:
-            keys[key_hash]["is_active"] = False
-            _write_api_keys(keys)
-            return True
-        
-        return False
+        keys = _get_api_keys_from_env()
+        return [
+            {
+                "name": meta.get("name"),
+                "created_at": meta.get("created_at"),
+                "last_used": meta.get("last_used"),
+                "is_active": meta.get("is_active"),
+            }
+            for meta in keys.values()
+        ]
     except Exception as e:
-        print(f"Error revoking API key: {e}")
-        return False
+        print(f"Error listing API keys: {e}")
+        return []
 
 
 def sanitize_input(input_string: str, max_length: int = 1000) -> str:

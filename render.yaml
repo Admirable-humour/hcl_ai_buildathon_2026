@@ -11,27 +11,14 @@ services:
     healthCheckPath: /health
     autoDeploy: true
 
-    disk:
-      name: data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
-
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.4
 
-      # API Authentication (set value in Render dashboard)
-      - key: X_API_KEY
+      - key: API_KEYS_JSON
         sync: false
 
-      - key: SECRET_SALT
-        generateValue: true
-        sync: false
-
-      - key: API_KEYS_FILE
-        value: /opt/render/project/src/data/.api_keys.json
-
-      #Gemini (set in Render dashboard)
+      #Gemini API Key (set in Render dashboard)
       - key: GEMINI_API_KEY
         sync: false
 
