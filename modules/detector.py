@@ -9,6 +9,7 @@ Edge Cases to Handle:
 import re
 import os
 import json
+import time
 from typing import List, Tuple, Optional
 from google import genai
 
@@ -16,6 +17,9 @@ from google import genai
 # Configure Gemini API for AI-based detection
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemma-3-27b-it" #Higer Parameter model for better analysis and detection.
+
+# Timeout configuration
+DETECTOR_TIMEOUT = 8  # 8 second timeout for detection
 
 # Initialize Gemini client
 _client = None
@@ -276,33 +280,30 @@ def detect_scam_with_ai(text: str, conversation_history: Optional[List[str]] = N
     
     try:
         # Create prompt for scam detection
-        prompt = f"""Analyze this message and determine if it's a scam attempt. Consider:
-- Phishing attempts
-- Financial fraud
-- Urgency tactics
-- Impersonation of authorities
-- Request for sensitive information
-- Any other type of General scam trying to extract sensitive information or financial details from the user.
-
-Consider all the various types of scams occuring in India and analyze the attached messages properly word by word.
-
+        prompt = f"""Analyze for scam: phishing, fraud, urgency tactics, impersonation, sensitive info requests.
 Message: "{text}"
+JSON only: {{"is_scam": true/false, "confidence": 0.0-1.0, "reason": "brief"}}"""
 
-Respond with ONLY a JSON object:
-{{"is_scam": true/false, "confidence": 0.0-1.0, "reason": "brief explanation in one or two sentences."}}"""
-
+        # Only include last 2 messages for context to reduce token count
         if conversation_history:
-            prompt += f"\n\nPrevious context: {' | '.join(conversation_history[-3:])}"
+            prompt += f"\nContext: {' | '.join(conversation_history[-2:])}"
         
-        # Call Gemini API
+        # Call Gemini API with timeout tracking
+        start_time = time.time()
         response = _client.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
             config={
-                "temperature": 0.1,  # Low temperature for consistency
-                "max_output_tokens": 100,
+                "temperature": 0.05,  # Very low for consistent detection
+                "max_output_tokens": 50,  # Reduced from 100 for speed
             }
         )
+        
+        elapsed = time.time() - start_time
+        if elapsed > DETECTOR_TIMEOUT:
+            print(f"Detector AI took {elapsed:.2f}s, using keyword fallback")
+            is_scam_kw, conf_kw, _ = detect_scam(text, threshold=0.5)
+            return is_scam_kw, conf_kw
         
         if response and response.text:
             # Parse JSON response

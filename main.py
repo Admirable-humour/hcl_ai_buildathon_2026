@@ -11,7 +11,8 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from typing import Optional, AsyncGenerator
 import os
-import requests
+import asyncio
+import httpx
 
 # Import modules
 from database.schemas import MessageRequest, MessageResponse
@@ -28,6 +29,9 @@ from modules.extractor import DataExtractor
 # Callback URL for sending scam intelligence
 CALLBACK_URL = os.getenv("CALLBACK_URL", "")
 primary_category = ""
+
+# Timeout configuration
+ENDPOINT_TIMEOUT = 15  # 15 second max timeout for entire endpoint
 
 # Initialize database on startup
 @asynccontextmanager
@@ -70,13 +74,11 @@ async def verify_auth(x_api_key: Optional[str] = Header(None)) -> bool:
             status_code=403,
             detail="Invalid or inactive API key"
         )
-    
-    return True
 
 
-def send_callback(session_id: str, extracted_data: dict, message_count: int):
+async def send_callback(session_id: str, extracted_data: dict, message_count: int):
     """
-    Send callback with extracted intelligence
+    Send callback with extracted intelligence using async httpx
     Called when scam is confirmed and engagement is complete
     
     Args:
@@ -106,19 +108,19 @@ def send_callback(session_id: str, extracted_data: dict, message_count: int):
             "agentNotes": f"Engagement completed after {message_count} messages. Scam intelligence extracted with the primary category of scam detected as {primary_category}."
         }
         
-        # Send POST request to callback URL
-        response = requests.post(
-            CALLBACK_URL,
-            json=payload,
-            timeout=10,
-            headers={"Content-Type": "application/json"}
-        )
-        
-        if response.status_code == 200:
-            print(f"Callback sent successfully for session {session_id}")
-            SessionManager.mark_callback_sent(session_id)
-        else:
-            print(f"Callback failed with status {response.status_code}")
+        # Send async POST request to callback URL
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(
+                CALLBACK_URL,
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            if response.status_code == 200:
+                print(f"Callback sent successfully for session {session_id}")
+                SessionManager.mark_callback_sent(session_id)
+            else:
+                print(f"Callback failed with status {response.status_code}")
             
     except Exception as e:
         print(f"Error sending callback: {e}")
@@ -157,135 +159,150 @@ async def message_endpoint(
         MessageResponse with AI-generated reply
     """
     try:
-        # Validate and sanitize session ID
-        if not validate_session_id(request.sessionId):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid session ID format"
-            )
-        
-        session_id = sanitize_input(request.sessionId, max_length=100)
-        message_text = sanitize_input(request.message.text, max_length=2000)
-        
-        # Get or create session
-        session = SessionManager.get_session(session_id)
-        if not session:
-            SessionManager.create_or_update_session(
-                session_id=session_id,
-                channel=request.metadata.channel if request.metadata else None,
-                language=request.metadata.language if request.metadata else None,
-                locale=request.metadata.locale if request.metadata else None
-            )
+        # Wrap main processing in timeout
+        async def process_message():
+            # Validate and sanitize session ID
+            if not validate_session_id(request.sessionId):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid session ID format"
+                )
+            
+            session_id = sanitize_input(request.sessionId, max_length=100)
+            message_text = sanitize_input(request.message.text, max_length=2000)
+            
+            # Get or create session
             session = SessionManager.get_session(session_id)
-        
-        # Check if callback already sent for this session
-        if session and session.get("callback_sent"):
+            if not session:
+                SessionManager.create_or_update_session(
+                    session_id=session_id,
+                    channel=request.metadata.channel if request.metadata else None,
+                    language=request.metadata.language if request.metadata else None,
+                    locale=request.metadata.locale if request.metadata else None
+                )
+                session = SessionManager.get_session(session_id)
+            
+            # Check if callback already sent for this session
+            if session and session.get("callback_sent"):
+                return MessageResponse(
+                    status="success",
+                    reply="thank you for the information."
+                )
+            
+            # Build conversation history for context
+            conversation_texts = [msg.text for msg in request.conversationHistory]
+            
+            # Step 1: Detect scam using hybrid approach (keyword + AI if needed)
+            # Only invoke AI if keywords suggest scam
+            is_scam, confidence, matched_keywords = detect_scam_hybrid(
+                message_text, 
+                conversation_texts,
+                use_ai=True  # Enable AI detection after keyword match
+            )
+            
+            # Step 2: Extract data from the message (both regex and AI) if message is detected as scam
+            extracted_data = DataExtractor().get_extracted_data()  # Initialize empty
+            if (is_scam == True) and confidence >=0.5:
+                extractor = DataExtractor()
+                extractor.extract_from_text(message_text, use_ai=True)
+                extracted_data = extractor.get_extracted_data()
+                scam_categories = get_scam_categories(message_text)
+                global primary_category
+                primary_category = get_primary_category(scam_categories)
+            
+            # Prepare batch data for efficient database writes
+            extraction_batch = []
+            if extracted_data.has_data():
+                for account in extracted_data.bank_accounts:
+                    extraction_batch.append(("bank_accounts", account))
+                for upi in extracted_data.upi_ids:
+                    extraction_batch.append(("upi_ids", upi))
+                for link in extracted_data.phishing_links:
+                    extraction_batch.append(("phishing_links", link))
+                for phone in extracted_data.phone_numbers:
+                    extraction_batch.append(("phone_numbers", phone))
+            
+            # Format conversation history for the agent
+            conversation_history = [
+                {
+                    'sender': msg.sender,
+                    'text': msg.text,
+                    'timestamp': msg.timestamp
+                }
+                for msg in request.conversationHistory
+            ]
+            
+            # Step 3: Generate AI response
+            ai_response = generate_response(
+                message=message_text,
+                conversation_history=conversation_history
+            )
+            
+            # Batch database writes for performance optimization
+            # Save incoming message
+            MessageManager.save_message(
+                session_id=session_id,
+                sender=request.message.sender,
+                text=message_text,
+                timestamp=request.message.timestamp
+            )
+            
+            # Save AI response
+            MessageManager.save_message(
+                session_id=session_id,
+                sender="user",
+                text=ai_response,
+                timestamp=request.message.timestamp + 1000  # Add 1 second
+            )
+            
+            # Save extracted data in batch
+            if extraction_batch:
+                ExtractedDataManager.save_extracted_data_batch(session_id, extraction_batch)
+            
+            # Save suspicious keywords in batch
+            if matched_keywords:
+                SuspiciousKeywordManager.save_keywords_batch(session_id, matched_keywords)
+            
+            # Update session metadata
+            if is_scam and confidence > session.get("scam_confidence", 0.0):
+                SessionManager.update_scam_status(session_id, True, confidence)
+            
+            # Increment message count (2 messages: incoming + response)
+            SessionManager.increment_message_count(session_id)
+            SessionManager.increment_message_count(session_id)
+            
+            # Check if we should send callback
+            # Criteria: scam detected, high confidence, sufficient messages, data extracted
+            message_count = session.get("message_count", 0) + 2
+            should_send_callback = (
+                is_scam and 
+                confidence >= 0.6 and 
+                message_count >= 6 and  # At least 3 exchanges
+                extracted_data.has_data() and
+                not session.get("callback_sent", False)
+            )
+            
+            if should_send_callback:
+                # Get all extracted data for callback - send in background
+                all_extracted = ExtractedDataManager.get_extracted_data(session_id)
+                # Fire and forget callback in background
+                asyncio.create_task(send_callback(session_id, all_extracted, message_count))
+            
             return MessageResponse(
                 status="success",
-                reply="thank you for the information."
+                reply=ai_response
             )
         
-        # Build conversation history for context
-        conversation_texts = [msg.text for msg in request.conversationHistory]
-        
-        # Step 1: Detect scam using hybrid approach (keyword + AI if needed)
-        # Only invoke AI if keywords suggest scam
-        is_scam, confidence, matched_keywords = detect_scam_hybrid(
-            message_text, 
-            conversation_texts,
-            use_ai=True  # Enable AI detection after keyword match
-        )
-        
-        # Step 2: Extract data from the message (both regex and AI) if message is detected as scam
-        if (is_scam == True) and confidence >=0.5:
-            extractor = DataExtractor()
-            extractor.extract_from_text(message_text, use_ai=True)
-            extracted_data = extractor.get_extracted_data()
-            scam_categories = get_scam_categories(message_text)
-            global primary_category
-            primary_category = get_primary_category(scam_categories)
-        
-        # Prepare batch data for efficient database writes
-        extraction_batch = []
-        if extracted_data.has_data():
-            for account in extracted_data.bank_accounts:
-                extraction_batch.append(("bank_accounts", account))
-            for upi in extracted_data.upi_ids:
-                extraction_batch.append(("upi_ids", upi))
-            for link in extracted_data.phishing_links:
-                extraction_batch.append(("phishing_links", link))
-            for phone in extracted_data.phone_numbers:
-                extraction_batch.append(("phone_numbers", phone))
-        
-        # Format conversation history for the agent
-        conversation_history = [
-            {
-                'sender': msg.sender,
-                'text': msg.text,
-                'timestamp': msg.timestamp
-            }
-            for msg in request.conversationHistory
-        ]
-        
-        # Step 3: Generate AI response
-        ai_response = generate_response(
-            message=message_text,
-            conversation_history=conversation_history
-        )
-        
-        # Batch database writes for performance optimization
-        # Save incoming message
-        MessageManager.save_message(
-            session_id=session_id,
-            sender=request.message.sender,
-            text=message_text,
-            timestamp=request.message.timestamp
-        )
-        
-        # Save AI response
-        MessageManager.save_message(
-            session_id=session_id,
-            sender="user",
-            text=ai_response,
-            timestamp=request.message.timestamp + 1000  # Add 1 second
-        )
-        
-        # Save extracted data in batch
-        if extraction_batch:
-            ExtractedDataManager.save_extracted_data_batch(session_id, extraction_batch)
-        
-        # Save suspicious keywords in batch
-        if matched_keywords:
-            SuspiciousKeywordManager.save_keywords_batch(session_id, matched_keywords)
-        
-        # Update session metadata
-        if is_scam and confidence > session.get("scam_confidence", 0.0):
-            SessionManager.update_scam_status(session_id, True, confidence)
-        
-        # Increment message count (2 messages: incoming + response)
-        SessionManager.increment_message_count(session_id)
-        SessionManager.increment_message_count(session_id)
-        
-        # Check if we should send callback
-        # Criteria: scam detected, high confidence, sufficient messages, data extracted
-        message_count = session.get("message_count", 0) + 2
-        should_send_callback = (
-            is_scam and 
-            confidence >= 0.6 and 
-            message_count >= 6 and  # At least 3 exchanges
-            extracted_data.has_data() and
-            not session.get("callback_sent", False)
-        )
-        
-        if should_send_callback:
-            # Get all extracted data for callback
-            all_extracted = ExtractedDataManager.get_extracted_data(session_id)
-            send_callback(session_id, all_extracted, message_count)
-        
-        return MessageResponse(
-            status="success",
-            reply=ai_response
-        )
+        # Execute with timeout
+        try:
+            return await asyncio.wait_for(process_message(), timeout=ENDPOINT_TIMEOUT)
+        except asyncio.TimeoutError:
+            print(f"Request timeout after {ENDPOINT_TIMEOUT}s")
+            # Return a fallback response on timeout
+            return MessageResponse(
+                status="success",
+                reply="sorry im a bit confused can u explain again?"
+            )
         
     except HTTPException:
         raise
