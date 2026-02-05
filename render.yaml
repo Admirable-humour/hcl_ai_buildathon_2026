@@ -2,7 +2,7 @@ services:
   - type: web
     name: ai-honeypot-api
     runtime: python
-    region: singapore
+    region: virginia
     plan: free
     branch: main
 
