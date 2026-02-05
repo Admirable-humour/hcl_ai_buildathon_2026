@@ -8,7 +8,8 @@ Edge Cases to Handle:
 """
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import JSONResponse
-from typing import Optional
+from contextlib import asynccontextmanager
+from typing import Optional, AsyncGenerator
 import os
 import requests
 
@@ -20,28 +21,29 @@ from database.database import (
 )
 from authentication.auth import verify_api_key, validate_session_id, sanitize_input
 from modules.agent import generate_response
-from modules.detector import detect_scam_hybrid, get_scam_category
+from modules.detector import detect_scam_hybrid, get_scam_categories,get_primary_category
 from modules.extractor import DataExtractor
 
 
 # Callback URL for sending scam intelligence
 CALLBACK_URL = os.getenv("CALLBACK_URL", "")
-
-
-# Initialize FastAPI app
-app = FastAPI(
-    title="AI Honeypot System",
-    description="Autonomous AI system to detect and engage with scammers",
-    version="1.0.0"
-)
-
+primary_category = ""
 
 # Initialize database on startup
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database when the application starts"""
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    "Lifespan context manager for FastAPI application. Handles startup events."
+    #Startup
+    print("Starting Up....")
     init_database()
 
+    yield
+
+# Initialize FastAPI app
+app = FastAPI(title="AI Honeypot System", 
+    description="Autonomous AI system to detect and engage with scammers", 
+    version="1.0.0", 
+    lifespan = lifespan)
 
 # Dependency for API key authentication
 async def verify_auth(x_api_key: Optional[str] = Header(None)) -> bool:
@@ -89,7 +91,7 @@ def send_callback(session_id: str, extracted_data: dict, message_count: int):
     try:
         # Get all suspicious keywords
         keywords = SuspiciousKeywordManager.get_keywords(session_id)
-        
+        global primary_category        
         payload = {
             "sessionId": session_id,
             "scamDetected": True,
@@ -101,7 +103,7 @@ def send_callback(session_id: str, extracted_data: dict, message_count: int):
                 "phoneNumbers": extracted_data.get("phone_numbers", []),
                 "suspiciousKeywords": list(set(keywords))[:10]  # Top 10 unique keywords
             },
-            "agentNotes": f"Engagement completed after {message_count} messages. Scam intelligence extracted."
+            "agentNotes": f"Engagement completed after {message_count} messages. Scam intelligence extracted with the primary category of scam detected as {primary_category}."
         }
         
         # Send POST request to callback URL
@@ -194,10 +196,14 @@ async def message_endpoint(
             use_ai=True  # Enable AI detection after keyword match
         )
         
-        # Step 2: Extract data from the message (both regex and AI)
-        extractor = DataExtractor()
-        extractor.extract_from_text(message_text, use_ai=True)
-        extracted_data = extractor.get_extracted_data()
+        # Step 2: Extract data from the message (both regex and AI) if message is detected as scam
+        if (is_scam == True) and confidence >=0.5:
+            extractor = DataExtractor()
+            extractor.extract_from_text(message_text, use_ai=True)
+            extracted_data = extractor.get_extracted_data()
+            scam_categories = get_scam_categories(message_text)
+            global primary_category
+            primary_category = get_primary_category(scam_categories)
         
         # Prepare batch data for efficient database writes
         extraction_batch = []

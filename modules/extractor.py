@@ -17,7 +17,7 @@ from google import genai
 
 # Configure Gemini API for AI-based extraction
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-3-27b-it")
 
 # Initialize Gemini client
 _client = None

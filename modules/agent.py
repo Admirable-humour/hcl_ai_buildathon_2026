@@ -18,7 +18,7 @@ load_dotenv()
 
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "_______") #PLEASE ENTER THE CORRECT MODEL
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-3-12b-it") #PLEASE ENTER THE CORRECT MODEL
 
 # Rate limiting configuration for Gemini 2.0 Flash Free tier
 # Free tier limits: 30 RPM (requests per minute), 15k TPM (tokens per minute), 14.4k RPD (requests per day)
@@ -206,7 +206,7 @@ Example responses:
             )
             
             if _looks_like_prompt_injection(message):
-                return "i dont understand all that. can u just tell which bank and send the official link again?"
+                return "I dont understand all that. Can u just tell which bank and send the official link again?"
             
             # Record API call for rate limiting
             _record_api_call()

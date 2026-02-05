@@ -31,16 +31,16 @@ def main():
     
     if success:
         print("\n" + "=" * 60)
-        print("✅ API Key Generated Successfully!")
+        print("API Key Generated Successfully!")
         print("=" * 60)
         print(f"\nKey Name: {key_name}")
         print(f"API Key:  {api_key}")
-        print("\n⚠️  IMPORTANT: Save this key securely!")
+        print("\n  IMPORTANT: Save this key securely!")
         print("   This key will not be shown again.")
-        print("   Use it in the X-API-Key header for all API requests.")
+        print("  Use it in the X-API-Key header for all API requests.")
         print("=" * 60)
     else:
-        print("\n❌ Failed to generate API key")
+        print("\n Failed to generate API key")
         print("   Please check database configuration and try again.")
         sys.exit(1)
 

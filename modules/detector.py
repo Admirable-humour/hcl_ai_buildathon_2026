@@ -8,13 +8,14 @@ Edge Cases to Handle:
 """
 import re
 import os
+import json
 from typing import List, Tuple, Optional
 from google import genai
 
 
 # Configure Gemini API for AI-based detection
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp")
+GEMINI_MODEL = "gemma-3-27b-it" #Higer Parameter model for better analysis and detection.
 
 # Initialize Gemini client
 _client = None
@@ -23,40 +24,96 @@ if GEMINI_API_KEY:
 
 
 # Common scam keywords and phrases (case-insensitive)
-SCAM_KEYWORDS = [
-    # Account/Banking threats
-    "account.*block", "account.*suspend", "account.*close", "account.*deactivate",
-    "verify.*account", "confirm.*account", "update.*account",
-    
-    # Urgency indicators
-    "immediate", "urgent", "asap", "now", "today", "within.*hour",
-    "expire", "expiring", "expired",
-    
-    # Financial terms
-    "upi", "bank.*detail", "account.*number", "ifsc", "cvv", "pin",
-    "payment.*fail", "transaction.*fail", "refund",
-    
-    # Authority impersonation
-    "bank.*notification", "official.*notice", "government",
-    "tax.*department", "income.*tax", "gst",
-    
-    # Action requests
-    "click.*link", "verify.*link", "update.*detail", "share.*detail",
-    "provide.*detail", "send.*detail", "confirm.*otp",
-    
-    # Prize/Offer scams
-    "congratulation", "winner", "won.*prize", "claim.*prize",
-    "lottery", "reward", "cashback",
-    
-    # Suspicious links
-    "bit\\.ly", "tinyurl", "short.*link",
-    
-    # Common scammer phrases
-    "kindly", "do.*needful", "revert.*back"
+PRIZE_PATTERNS = [
+    r"\bcongratulations?\b",
+    r"\bwinner\b",
+    r"\blottery\b",
+    r"\breward\b",
+    r"\bcashback\b",
+    r"won.*prize",
+    r"claim.*prize",
 ]
 
+# Strong patterns: alone should be high-confidence
+STRONG_PATTERNS = [
+    r"\botp\b",
+    r"\b(mpin|pin)\b",
+    r"\bpassword\b",
+    r"\bcvv\b",
+    r"\bbit\.ly\b",
+    r"\btinyurl\b",
+    r"\bupi\b",
+    r"\bifsc\b",
+    r"\baccount\b.*\bnumber\b",
+]
 
-def detect_scam(text: str, threshold: float = 0.3) -> Tuple[bool, float, List[str]]:
+# Weak patterns: should NOT alone classify as scam (reduce false positives)
+WEAK_PATTERNS = [
+    r"\burgent\b",
+    r"\bimmediate\b",
+    r"\basap\b",
+    r"\bnow\b",
+    r"\btoday\b",
+    r"\bexpire\b",
+    r"\bexpired\b",
+    r"\bexpiring\b",
+    r"\bkindly\b",
+    r"do.*needful",
+    r"revert.*back",
+    r"\bofficial\b.*\bnotice\b",
+    r"\bbank\b.*\bnotification\b",
+    r"\brefund\b",
+]
+
+# Action-request patterns (often scam when paired with weak/strong)
+ACTION_PATTERNS = [
+    r"https?://[^\s)\]}>,\"']+",
+    r"click.*link",
+    r"verify.*link",
+    r"update.*detail",
+    r"share.*detail",
+    r"provide.*detail",
+    r"send.*detail",
+    r"confirm.*otp",
+    r"verify.*account",
+    r"confirm.*account",
+    r"update.*account",
+    r"account.*block",
+    r"account.*suspend",
+    r"account.*deactivate",
+    r"account.*close",
+]
+
+def _safe_json_load(s: str) -> Optional[dict]:
+    """
+    Gemini sometimes returns JSON in code fences or extra text.
+    This extracts the first {...} block and parses it safely.
+    """
+    if not s:
+        return None
+    s = s.strip()
+    # Remove markdown code fences
+    s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s, flags=re.IGNORECASE)
+    # Extract first JSON object
+    m = re.search(r"\{.*?\}", s, flags=re.DOTALL)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0))
+    except json.JSONDecodeError:
+        try:
+            return json.loads(m.group(0).replace("'", '"'))
+        except json.JSONDecodeError:
+            return None
+
+def _match_patterns(text_lower: str, patterns: List[str]) -> List[str]:
+    matched = []
+    for p in patterns:
+        if re.search(p, text_lower):
+            matched.append(p)
+    return matched
+
+def detect_scam(text: str, threshold: float = 0.5) -> Tuple[bool, float, List[str]]:
     """
     Detect if a message is likely a scam based on keyword matching
     
@@ -71,29 +128,36 @@ def detect_scam(text: str, threshold: float = 0.3) -> Tuple[bool, float, List[st
         return False, 0.0, []
     
     text_lower = text.lower()
-    matched_keywords = []
+    matched_strong = _match_patterns(text_lower, STRONG_PATTERNS)
+    matched_action = _match_patterns(text_lower, ACTION_PATTERNS)
+    matched_weak = _match_patterns(text_lower, WEAK_PATTERNS)
+    matched_prize = _match_patterns(text_lower, PRIZE_PATTERNS)
+
+    matched_all = matched_strong + matched_action + matched_weak+ matched_prize
     
-    # Check for keyword matches
-    for pattern in SCAM_KEYWORDS:
-        if re.search(pattern, text_lower):
-            matched_keywords.append(pattern)
-    
+    weak_count = len(matched_weak)
+    action_count = len(matched_action)
     # Calculate confidence score based on number of matches
     # More matches = higher confidence
-    if not matched_keywords:
-        confidence = 0.0
-    elif len(matched_keywords) == 1:
-        confidence = 0.4
-    elif len(matched_keywords) == 2:
-        confidence = 0.6
-    elif len(matched_keywords) == 3:
-        confidence = 0.8
+    if matched_strong:
+        confidence = 0.85
+    elif action_count >= 2 and weak_count >= 1:
+        confidence = 0.75
+    elif matched_action and (matched_weak or matched_prize):
+        confidence = 0.70
+    elif matched_action:
+        confidence = 0.55
+    elif matched_prize and matched_weak:
+        confidence = 0.45
+    elif matched_prize:
+        confidence = 0.30   # prize-only: track as suspicious but not "scam" by default
+    elif weak_count >= 2:
+        confidence = 0.35
     else:
-        confidence = 0.95
-    
+        confidence = 0.0
+
     is_scam = confidence >= threshold
-    
-    return is_scam, confidence, matched_keywords
+    return is_scam, confidence, matched_all
 
 
 def analyze_conversation_context(messages: List[str]) -> Tuple[bool, float]:
@@ -113,7 +177,7 @@ def analyze_conversation_context(messages: List[str]) -> Tuple[bool, float]:
     scam_message_count = 0
     
     for message in messages:
-        is_scam, confidence, _ = detect_scam(message)
+        is_scam, confidence, _ = detect_scam(message, threshold=0.4)
         if is_scam:
             scam_message_count += 1
             total_confidence += confidence
@@ -128,12 +192,12 @@ def analyze_conversation_context(messages: List[str]) -> Tuple[bool, float]:
     if scam_message_count > 1:
         avg_confidence = min(0.99, avg_confidence * 1.2)
     
-    is_scam = avg_confidence >= 0.3
+    is_scam = avg_confidence >= 0.5
     
     return is_scam, avg_confidence
 
 
-def get_scam_category(text: str) -> str:
+def get_scam_categories(text: str) -> List[str]:
     """
     Categorize the type of scam based on keywords
     
@@ -141,22 +205,56 @@ def get_scam_category(text: str) -> str:
         text: The message text to categorize
         
     Returns:
-        String indicating scam category
+        List indicating scam categories
     """
+    if not text:
+        return ["general_scam"]
     text_lower = text.lower()
     
-    if re.search(r'upi|account.*number|bank.*detail', text_lower):
-        return "financial_phishing"
-    elif re.search(r'prize|winner|lottery|won', text_lower):
-        return "prize_scam"
-    elif re.search(r'otp|verify|confirm', text_lower):
-        return "otp_scam"
-    elif re.search(r'account.*block|suspend|deactivate', text_lower):
-        return "account_threat"
-    elif re.search(r'click.*link|bit\.ly|tinyurl', text_lower):
-        return "phishing_link"
-    else:
-        return "general_scam"
+    cats: List[str] = []
+
+    # High-risk / financial credential scams
+    if re.search(r"\bupi\b|\bifsc\b|\baccount\b.*\bnumber\b|\bbank\b.*(detail|details|info|information|account)", text_lower):
+        cats.append("financial_phishing")
+
+    # OTP / credential theft
+    if re.search(r"\botp\b|\bcvv\b|\b(mpin|pin)\b|\bpassword\b", text_lower):
+        cats.append("otp_scam")
+
+    # Account threat / scare tactics
+    if re.search(r"account.*(block|suspend|deactivate|close)", text_lower):
+        cats.append("account_threat")
+
+    # Link phishing / short links
+    if re.search(r"https?://[^\s)\]}>,\"']+|\bbit\.ly\b|\btinyurl\b", text_lower) or re.search(r"click.*link|verify.*link", text_lower):
+        cats.append("phishing_link")
+
+    # Prize / reward scams (lower severity)
+    if re.search(r"prize|winner|lottery|won|reward|cashback|claim", text_lower):
+        cats.append("prize_scam")
+
+    if not cats:
+        cats.append("general_scam")
+
+    return cats
+
+
+def get_primary_category(categories: List[str]) -> str:
+    """
+    Pick one primary category by severity order for reporting.
+    """
+    priority = [
+        "otp_scam",
+        "financial_phishing",
+        "phishing_link",
+        "account_threat",
+        "prize_scam",
+        "general_scam",
+    ]
+    for p in priority:
+        if p in categories:
+            return p
+    return "general_scam"
 
 
 def detect_scam_with_ai(text: str, conversation_history: Optional[List[str]] = None) -> Tuple[bool, float]:
@@ -173,7 +271,8 @@ def detect_scam_with_ai(text: str, conversation_history: Optional[List[str]] = N
     """
     if not _client:
         # Fallback if Gemini not configured
-        return False, 0.0
+        is_scam_kw, conf_kw, _ = detect_scam(text, threshold=0.5)
+        return is_scam_kw, conf_kw
     
     try:
         # Create prompt for scam detection
@@ -183,11 +282,14 @@ def detect_scam_with_ai(text: str, conversation_history: Optional[List[str]] = N
 - Urgency tactics
 - Impersonation of authorities
 - Request for sensitive information
+- Any other type of General scam trying to extract sensitive information or financial details from the user.
+
+Consider all the various types of scams occuring in India and analyze the attached messages properly word by word.
 
 Message: "{text}"
 
 Respond with ONLY a JSON object:
-{{"is_scam": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}}"""
+{{"is_scam": true/false, "confidence": 0.0-1.0, "reason": "brief explanation in one or two sentences."}}"""
 
         if conversation_history:
             prompt += f"\n\nPrevious context: {' | '.join(conversation_history[-3:])}"
@@ -204,15 +306,23 @@ Respond with ONLY a JSON object:
         
         if response and response.text:
             # Parse JSON response
-            import json
-            result = json.loads(response.text.strip())
-            return result.get("is_scam", False), result.get("confidence", 0.0)
+            result = _safe_json_load(response.text)
+            if result:
+                conf_raw = result.get("confidence", 0.0)
+                try:
+                    conf = float(conf_raw)
+                except (TypeError, ValueError):
+                    conf = 0.0
+                return bool(result.get("is_scam", False)), conf
+
         
-        return False, 0.0
+        is_scam_kw, conf_kw, _ = detect_scam(text, threshold=0.5)
+        return is_scam_kw, conf_kw
         
     except Exception as e:
         print(f"Error in AI scam detection: {e}")
-        return False, 0.0
+        is_scam_kw, conf_kw, _ = detect_scam(text, threshold=0.5)
+        return is_scam_kw, conf_kw
 
 
 def detect_scam_hybrid(text: str, conversation_history: Optional[List[str]] = None, 
@@ -229,16 +339,16 @@ def detect_scam_hybrid(text: str, conversation_history: Optional[List[str]] = No
         Tuple of (is_scam, confidence_score, matched_keywords)
     """
     # Step 1: Keyword-based detection (fast)
-    is_scam_kw, confidence_kw, keywords = detect_scam(text)
+    is_scam_kw, confidence_kw, keywords = detect_scam(text, threshold=0.5)
     
     # Step 2: If keywords suggest potential scam, invoke AI for confirmation
-    if use_ai and confidence_kw >= 0.3 and _client:
+    if use_ai and confidence_kw >= 0.35 and _client:
         is_scam_ai, confidence_ai = detect_scam_with_ai(text, conversation_history)
         
         # Combine keyword and AI confidence
-        # Weight: 40% keywords, 60% AI
-        combined_confidence = (0.4 * confidence_kw) + (0.6 * confidence_ai)
-        is_scam = combined_confidence >= 0.5
+        # Use max so strong keyword signals (e.g., OTP/UPI/link) can't be "downgraded" by AI noise.
+        combined_confidence = max(confidence_kw, confidence_ai)
+        is_scam = (combined_confidence >= 0.5) or is_scam_ai
         
         return is_scam, combined_confidence, keywords
     

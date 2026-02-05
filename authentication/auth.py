@@ -14,7 +14,7 @@ import json
 from datetime import datetime
 from typing import Optional, Tuple, Dict
 from pathlib import Path
-import fcntl  # For file locking on Unix systems
+import portalocker  # Cross-platform file locking (works on Windows, Linux, macOS)
 
 
 # Use environment variable for additional security salt
@@ -38,27 +38,27 @@ def _read_api_keys() -> Dict:
     """Read API keys from secure file with locking"""
     _ensure_api_keys_file()
     with open(API_KEYS_FILE, 'r') as f:
-        # Lock file for reading
-        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        # Lock file for reading (shared lock)
+        portalocker.lock(f, portalocker.LOCK_SH)
         try:
             data = json.load(f)
             return data.get("keys", {})
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            portalocker.unlock(f)
 
 
 def _write_api_keys(keys: Dict):
     """Write API keys to secure file with locking"""
     _ensure_api_keys_file()
     with open(API_KEYS_FILE, 'r+') as f:
-        # Lock file for writing
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        # Lock file for writing (exclusive lock)
+        portalocker.lock(f, portalocker.LOCK_EX)
         try:
             f.seek(0)
             json.dump({"keys": keys}, f, indent=2)
             f.truncate()
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            portalocker.unlock(f)
 
 
 def generate_api_key() -> str:
