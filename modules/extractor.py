@@ -103,18 +103,9 @@ class DataExtractor:
             return ScamData()
         
         try:
-            prompt = f"""Extract scam-related information from this message:
-"{text}"
-
-Extract and return ONLY a JSON object with these fields:
-{{
-  "bank_accounts": ["list of account numbers"],
-  "upi_ids": ["list of UPI IDs like user@bank"],
-  "phishing_links": ["list of URLs"],
-  "phone_numbers": ["list of phone numbers"]
-}}
-
-If nothing found for a category, use empty list []."""
+            prompt = f"""Extract scam data from: "{text}"
+Return JSON: {{"bank_accounts": [], "upi_ids": [], "phishing_links": [], "phone_numbers": []}}
+Use empty [] if none found."""
 
             start_time = time.time()
             response = _client.models.generate_content(
