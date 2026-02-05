@@ -2,54 +2,48 @@ services:
   - type: web
     name: ai-honeypot-api
     runtime: python
-    region: singapore  # Best for low latency to India; also serves US reasonably
-    plan: free  # Free tier for hackathon
-    branch: main  # Auto-deploy from main branch
+    region: singapore
+    plan: free
+    branch: main
+
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-    autoDeploy: true  # Auto-deploy on every push to main
-    
+    autoDeploy: true
+
+    disk:
+      name: data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+
     envVars:
-      # Python Configuration
       - key: PYTHON_VERSION
         value: 3.13.4
-      
-      # API Authentication (MANUALLY SET IN RENDER DASHBOARD)
+
+      # API Authentication (set value in Render dashboard)
       - key: X_API_KEY
         sync: false
-      
+
       - key: SECRET_SALT
-        generateValue: true  # Auto-generate secure salt
+        generateValue: true
         sync: false
-      
+
       - key: API_KEYS_FILE
-        value: /opt/render/project/src/.api_keys.json
-      
-      # Google Gemini API (MANUALLY SET IN RENDER DASHBOARD)
-      - key: GOOGLE_API_KEY
+        value: /opt/render/project/src/data/.api_keys.json
+
+      #Gemini (set in Render dashboard)
+      - key: GEMINI_API_KEY
         sync: false
-      
-      # You MUST add your Gemini API key in Render dashboard
+
       - key: GEMINI_MODEL
         sync: false
-      
-      # Callback Configuration
+
       - key: CALLBACK_URL
         sync: false
-      
-      # Database Configuration
+
+      #SQLite file stored on the mounted disk
       - key: DATABASE_URL
-        value: sqlite:///./honeypot.db
-      
-      # Application Settings
+        value: sqlite:////opt/render/project/src/data/honeypot.db
+
       - key: HOST
         value: 0.0.0.0
-      
-      - key: PORT
-        value: 10000  # Render's default port (overridden by $PORT at runtime)
-
-disk:
-  - name: data
-    mountPath: /opt/render/project/src/data
-    sizeGB: 1  # 1GB free tier
