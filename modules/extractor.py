@@ -79,15 +79,72 @@ class DataExtractor:
     """Extract scam-related data from text messages using regex and AI"""
     
     # Regex patterns for different data types
-    BANK_ACCOUNT_PATTERN = r'\b\d{9,18}\b'  # 9-18 digit bank account numbers
+    # Indian bank accounts: 9-18 digits, but NOT preceded/followed by letters
+    # This prevents matching "16 digit" or "SBI" as account numbers
+    BANK_ACCOUNT_PATTERN = r'(?<![a-zA-Z])\b(\d{9,18})\b(?![a-zA-Z])'
+    
     UPI_ID_PATTERN = r'[\w\.-]+@[\w\.-]+'  # UPI ID format: user@bank
-    URL_PATTERN = r'https?://[^\s]+|www\.[^\s]+|bit\.ly/[^\s]+|tinyurl\.com/[^\s]+'
+    
+    # Enhanced URL pattern to catch more obfuscated links
+    URL_PATTERN = r'(?xi)(?:(?:https?|hxxp)://|www\.|\b\d{1,3}(?:\.\d{1,3}){3}\b)[A-Za-z0-9\-._~:/?#\[\]@!$&\'()*+,;=%]+|(?:bit\.ly|tinyurl\.com|t\.co|goo\.gl|ow\.ly|buff\.ly|is\.gd|short\.ly|shr\.tn)/[^\s)>\]]*'
+    
     PHONE_PATTERN = r'\b(?:\+91[\s-]?)?[6-9]\d{9}\b'  # Indian phone numbers
     IFSC_PATTERN = r'\b[A-Z]{4}0[A-Z0-9]{6}\b'  # IFSC code pattern
+    
+    # Words to exclude from bank account matching (common false positives)
+    BANK_ACCOUNT_EXCLUDE_WORDS = {
+        'digit', 'number', 'account', 'code', 'pin', 'otp', 'cvv', 
+        'mobile', 'phone', 'contact', 'sbi', 'hdfc', 'icici', 'axis',
+        'pnb', 'bob', 'canara', 'union', 'indian', 'bank'
+    }
     
     def __init__(self):
         """Initialize the data extractor"""
         self.data = ScamData()
+    
+    def _is_valid_bank_account(self, account: str, context: str) -> bool:
+        """
+        Validate if extracted number is actually a bank account
+        
+        Args:
+            account: The potential bank account number
+            context: Surrounding text for context validation
+            
+        Returns:
+            True if valid bank account, False otherwise
+        """
+        # Must be numeric only
+        if not account.isdigit():
+            return False
+        
+        # Length validation: Indian bank accounts are typically 9-18 digits
+        # But 16 digits alone is suspicious (could be card number mention)
+        account_len = len(account)
+        if account_len < 9 or account_len > 18:
+            return False
+        
+        # Check if it's likely a phone number (10 digits starting with 6-9)
+        if account_len == 10 and account[0] in '6789':
+            return False
+        
+        # Get 20 characters before and after for context
+        context_lower = context.lower()
+        account_pos = context_lower.find(account)
+        if account_pos != -1:
+            start = max(0, account_pos - 20)
+            end = min(len(context_lower), account_pos + len(account) + 20)
+            surrounding = context_lower[start:end]
+            
+            # Reject if surrounded by exclude words
+            for word in self.BANK_ACCOUNT_EXCLUDE_WORDS:
+                if word in surrounding:
+                    return False
+            
+            # Reject if part of phrases like "16 digit account"
+            if re.search(r'\d+\s*digit', surrounding):
+                return False
+        
+        return True
     
     def _extract_with_ai(self, text: str) -> ScamData:
         """
@@ -103,17 +160,24 @@ class DataExtractor:
             return ScamData()
         
         try:
-            prompt = f"""Extract scam data from: "{text}"
+            prompt = f"""Extract ONLY actual scam data from: "{text}"
+
+Rules:
+- bank_accounts: ONLY numeric strings of 9-18 digits that are ACTUAL bank account numbers (NOT "16 digit" or bank names like "SBI")
+- upi_ids: Format user@bank (e.g., scammer@paytm)
+- phishing_links: URLs or shortened links
+- phone_numbers: 10-digit Indian numbers starting with 6-9
+
 Return JSON: {{"bank_accounts": [], "upi_ids": [], "phishing_links": [], "phone_numbers": []}}
-Use empty [] if none found. Analyse the messages word by word but be fast and precise with your output."""
+Use empty [] if none found. Be precise - do not extract descriptive text."""
 
             start_time = time.time()
             response = _client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=prompt,
                 config={
-                    "temperature": 0.08,  # Low temperature for precise extraction
-                    "max_output_tokens": 150,  # Adequate for extraction results
+                    "temperature": 0.05,  # Very low temperature for precise extraction
+                    "max_output_tokens": 150,
                 }
             )
             
@@ -132,8 +196,13 @@ Use empty [] if none found. Analyse the messages word by word but be fast and pr
                 result = json.loads(text_clean)
                 ai_data = ScamData()
                 
+                # Validate bank accounts from AI
                 for account in result.get("bank_accounts", []):
-                    ai_data.add_bank_account(str(account))
+                    account_str = str(account).strip()
+                    # Only accept if it's purely numeric and valid length
+                    if account_str.isdigit() and 9 <= len(account_str) <= 18:
+                        ai_data.add_bank_account(account_str)
+                
                 for upi in result.get("upi_ids", []):
                     ai_data.add_upi_id(str(upi))
                 for link in result.get("phishing_links", []):
@@ -144,7 +213,7 @@ Use empty [] if none found. Analyse the messages word by word but be fast and pr
                 return ai_data
         
         except json.JSONDecodeError as e:
-            print(f"Error in AI extraction: {e}")
+            print(f"JSON decode error in AI extraction: {e}")
         except Exception as e:
             print(f"Error in AI extraction: {e}")
         
@@ -165,21 +234,26 @@ Use empty [] if none found. Analyse the messages word by word but be fast and pr
             return self.data
         
         # Step 1: Regex-based extraction (fast, reliable)
-        # Extract bank account numbers
-        bank_accounts = re.findall(self.BANK_ACCOUNT_PATTERN, text)
-        for account in bank_accounts:
-            self.data.add_bank_account(account)
+        # Extract bank account numbers with strict validation
+        potential_accounts = re.findall(self.BANK_ACCOUNT_PATTERN, text)
+        for account in potential_accounts:
+            if self._is_valid_bank_account(account, text):
+                self.data.add_bank_account(account)
         
         # Extract UPI IDs
         upi_ids = re.findall(self.UPI_ID_PATTERN, text)
         for upi in upi_ids:
-            # Validate UPI ID format (should have @ symbol)
+            # Validate UPI ID format (should have @ symbol and proper structure)
             if '@' in upi and not upi.startswith('@') and not upi.endswith('@'):
-                self.data.add_upi_id(upi)
+                # Ensure it's not an email-like pattern with spaces
+                if ' ' not in upi:
+                    self.data.add_upi_id(upi)
         
         # Extract URLs/links
         urls = re.findall(self.URL_PATTERN, text, re.IGNORECASE)
         for url in urls:
+            # Clean trailing punctuation
+            url = url.rstrip('.,;:!?')
             self.data.add_phishing_link(url)
         
         # Extract phone numbers
@@ -193,9 +267,12 @@ Use empty [] if none found. Analyse the messages word by word but be fast and pr
         if use_ai and _client:
             ai_data = self._extract_with_ai(text)
             
-            # Merge AI results with regex results
+            # Merge AI results with regex results (with validation)
             for account in ai_data.bank_accounts:
-                self.data.add_bank_account(account)
+                # Double-check AI extracted accounts
+                if account.isdigit() and 9 <= len(account) <= 18:
+                    self.data.add_bank_account(account)
+            
             for upi in ai_data.upi_ids:
                 self.data.add_upi_id(upi)
             for link in ai_data.phishing_links:

@@ -48,7 +48,8 @@ STRONG_PATTERNS = [
     r"\btinyurl\b",
     r"\bupis?\b",
     r"\bifsc\b",
-    r"\baccounts?\b.*\bnumbers?\b",
+    # Enhanced bank account detection - must be actual number, not phrase
+    r"(?<![a-zA-Z])\b\d{9,18}\b(?![a-zA-Z])",  # 9-18 digit numbers (not "16 digit")
 ]
 
 # Weak patterns: should NOT alone classify as scam (reduce false positives)
@@ -109,12 +110,59 @@ def _safe_json_load(s: str) -> Optional[dict]:
             return None
 
 def _match_patterns(text_lower: str, patterns: List[str]) -> List[str]:
+    """Match patterns and return matched strings"""
     matched = []
     for p in patterns:
         match = re.search(p, text_lower)
         if match:
             matched.append(match.group(0))
     return matched
+
+def _is_valid_account_number_in_context(match: str, text: str) -> bool:
+    """
+    Check if a matched number is actually a bank account number
+    and not part of phrases like "16 digit account number"
+    
+    Args:
+        match: The matched digit string
+        text: Full text for context
+        
+    Returns:
+        True if it's a valid standalone bank account number
+    """
+    if not match.isdigit():
+        return False
+    
+    # Get surrounding context
+    text_lower = text.lower()
+    match_pos = text_lower.find(match)
+    if match_pos == -1:
+        return True  # Can't find context, assume valid
+    
+    # Get 25 chars before and after
+    start = max(0, match_pos - 25)
+    end = min(len(text_lower), match_pos + len(match) + 25)
+    context = text_lower[start:end]
+    
+    # Exclude if it's part of descriptive phrases
+    exclude_phrases = [
+        r'\d+\s*digit',  # "16 digit"
+        r'digit\s*\w*\s*account',  # "digit account"
+        r'account\s*number',  # Immediately followed by "number"
+        r'bank\s*name',  # Near bank name references
+    ]
+    
+    for phrase in exclude_phrases:
+        if re.search(phrase, context):
+            return False
+    
+    # Exclude common bank name abbreviations near the number
+    bank_names = ['sbi', 'hdfc', 'icici', 'axis', 'pnb', 'bob', 'canara']
+    for bank in bank_names:
+        if bank in context:
+            return False
+    
+    return True
 
 def detect_scam(text: str, threshold: float = 0.5) -> Tuple[bool, float, List[str]]:
     """
@@ -131,17 +179,30 @@ def detect_scam(text: str, threshold: float = 0.5) -> Tuple[bool, float, List[st
         return False, 0.0, []
     
     text_lower = text.lower()
-    matched_strong = _match_patterns(text_lower, STRONG_PATTERNS)
+    
+    # Match patterns with context validation for account numbers
+    matched_strong = []
+    for pattern in STRONG_PATTERNS:
+        matches = re.finditer(pattern, text_lower)
+        for match in matches:
+            matched_str = match.group(0)
+            # If it looks like a bank account number, validate context
+            if matched_str.isdigit() and len(matched_str) >= 9:
+                if _is_valid_account_number_in_context(matched_str, text):
+                    matched_strong.append(matched_str)
+            else:
+                matched_strong.append(matched_str)
+    
     matched_action = _match_patterns(text_lower, ACTION_PATTERNS)
     matched_weak = _match_patterns(text_lower, WEAK_PATTERNS)
     matched_prize = _match_patterns(text_lower, PRIZE_PATTERNS)
 
-    matched_all = matched_strong + matched_action + matched_weak+ matched_prize
+    matched_all = matched_strong + matched_action + matched_weak + matched_prize
     
     weak_count = len(matched_weak)
     action_count = len(matched_action)
+    
     # Calculate confidence score based on number of matches
-    # More matches = higher confidence
     if matched_strong:
         confidence = 0.85
     elif action_count >= 2 and weak_count >= 1:
@@ -217,8 +278,17 @@ def get_scam_categories(text: str) -> List[str]:
     cats: List[str] = []
 
     # High-risk / financial credential scams
-    if re.search(r"\bupi\b|\bifsc\b|\baccount\b.*\bnumber\b|\bbank\b.*(detail|details|info|information|account)", text_lower):
+    # Enhanced to avoid false positives from phrases like "bank account number"
+    if re.search(r"\bupi\b|\bifsc\b", text_lower):
         cats.append("financial_phishing")
+    
+    # Check for actual account numbers (not phrases)
+    account_pattern = r"(?<![a-zA-Z])\b\d{9,18}\b(?![a-zA-Z])"
+    potential_accounts = re.finditer(account_pattern, text_lower)
+    for match in potential_accounts:
+        if _is_valid_account_number_in_context(match.group(0), text):
+            cats.append("financial_phishing")
+            break
 
     # OTP / credential theft
     if re.search(r"\botp\b|\bcvv\b|\b(mpin|pin)\b|\bpassword\b", text_lower):
