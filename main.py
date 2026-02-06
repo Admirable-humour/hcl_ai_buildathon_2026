@@ -143,7 +143,7 @@ async def send_callback(session_id: str, extracted_data: dict, message_count: in
         print(f"Error sending callback: {e}")
 
 
-@app.post("/message", response_model=MessageResponse)
+@app.post("/ ", response_model=MessageResponse)
 async def message_endpoint(
     request: MessageRequest,
     authenticated: bool = Depends(verify_auth)
