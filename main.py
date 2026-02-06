@@ -30,7 +30,7 @@ CALLBACK_URL = os.getenv("CALLBACK_URL", "")
 primary_category = ""
 
 # Timeout configuration
-ENDPOINT_TIMEOUT = 15  # 15 second max timeout for entire endpoint
+ENDPOINT_TIMEOUT = 25  # 25 second max timeout for entire endpoint
 
 # Initialize database on startup
 @asynccontextmanager
@@ -73,6 +73,24 @@ async def verify_auth(x_api_key: Optional[str] = Header(None)) -> bool:
             status_code=403,
             detail="Invalid or inactive API key"
         )
+    
+    return True
+
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "message": "AI Honeypot System API",
+        "version": "1.0.0",
+        "status": "active"
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy"}
 
 
 async def send_callback(session_id: str, extracted_data: dict, message_count: int):
@@ -107,41 +125,25 @@ async def send_callback(session_id: str, extracted_data: dict, message_count: in
             "agentNotes": f"Engagement completed after {message_count} messages. Scam intelligence extracted with the primary category of scam detected as {primary_category}."
         }
         
-        # Send async POST request to callback URL
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        # Send POST request to callback URL using async httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 CALLBACK_URL,
                 json=payload,
                 headers={"Content-Type": "application/json"}
             )
-            
-            if response.status_code == 200:
-                print(f"Callback sent successfully for session {session_id}")
-                SessionManager.mark_callback_sent(session_id)
-            else:
-                print(f"Callback failed with status {response.status_code}")
+        
+        if response.status_code == 200:
+            print(f"Callback sent successfully for session {session_id}")
+            SessionManager.mark_callback_sent(session_id)
+        else:
+            print(f"Callback failed with status {response.status_code}")
             
     except Exception as e:
         print(f"Error sending callback: {e}")
 
 
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "message": "AI Honeypot System API",
-        "version": "1.0.0",
-        "status": "active"
-    }
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy"}
-
-
-@app.post("/", response_model=MessageResponse)
+@app.post("/message", response_model=MessageResponse)
 async def message_endpoint(
     request: MessageRequest,
     authenticated: bool = Depends(verify_auth)
@@ -181,19 +183,10 @@ async def message_endpoint(
                 )
                 session = SessionManager.get_session(session_id)
             
-            # Check if callback already sent - if so, provide closing response
-            if session and session.get("callback_sent"):
-                # Agent should provide a natural disengagement response
-                return MessageResponse(
-                    status="success",
-                    reply="ok let me verify this with my bank first. i will get back to you. thank you."
-                )
-            
             # Build conversation history for context
             conversation_texts = [msg.text for msg in request.conversationHistory]
             
             # Step 1: Detect scam using hybrid approach (keyword + AI if needed)
-            # Only invoke AI if keywords suggest scam
             is_scam, confidence, matched_keywords = detect_scam_hybrid(
                 message_text, 
                 conversation_texts,
@@ -202,7 +195,7 @@ async def message_endpoint(
             
             # Step 2: Extract data from the message (both regex and AI) if message is detected as scam
             extracted_data = DataExtractor().get_extracted_data()  # Initialize empty
-            if (is_scam == True) and confidence >=0.5:
+            if is_scam and confidence >= 0.5:
                 extractor = DataExtractor()
                 extractor.extract_from_text(message_text, use_ai=True)
                 extracted_data = extractor.get_extracted_data()
@@ -271,23 +264,32 @@ async def message_endpoint(
             SessionManager.increment_message_count(session_id)
             SessionManager.increment_message_count(session_id)
             
+            # Get updated message count from session
+            updated_session = SessionManager.get_session(session_id)
+            message_count = updated_session.get("message_count", 0)
+            
             # Check if we should send callback
             # Criteria: scam detected, high confidence, sufficient messages, data extracted
-            message_count = session.get("message_count", 0) + 2
+            # IMPORTANT: Only send callback ONCE per session (check callback_sent flag)
             should_send_callback = (
                 is_scam and 
                 confidence >= 0.6 and 
                 message_count >= 6 and  # At least 3 exchanges
                 extracted_data.has_data() and
-                not session.get("callback_sent", False)
+                not updated_session.get("callback_sent", False)  # Only if not already sent
             )
             
+            # Send callback AFTER all processing is complete, but BEFORE returning response
             if should_send_callback:
-                # Get all extracted data for callback - send in background
+                # Get all extracted data accumulated across the entire conversation
                 all_extracted = ExtractedDataManager.get_extracted_data(session_id)
-                # Fire and forget callback in background
+                
+                # Send callback asynchronously (fire and forget to not block response)
+                # But mark session IMMEDIATELY to prevent duplicate callbacks
+                SessionManager.mark_callback_sent(session_id)
                 asyncio.create_task(send_callback(session_id, all_extracted, message_count))
             
+            # Return the AI response (always respond, even after callback is sent)
             return MessageResponse(
                 status="success",
                 reply=ai_response

@@ -93,7 +93,7 @@ class DataExtractor:
     
     # Words to exclude from bank account matching (common false positives)
     BANK_ACCOUNT_EXCLUDE_WORDS = {
-        'digit', 'number', 'account', 'code', 'pin', 'otp', 'cvv', 
+        'digit', 'account', 'code', 'pin', 'otp', 'cvv', 
         'mobile', 'phone', 'contact', 'sbi', 'hdfc', 'icici', 'axis',
         'pnb', 'bob', 'canara', 'union', 'indian', 'bank'
     }
@@ -118,7 +118,6 @@ class DataExtractor:
             return False
         
         # Length validation: Indian bank accounts are typically 9-18 digits
-        # But 16 digits alone is suspicious (could be card number mention)
         account_len = len(account)
         if account_len < 9 or account_len > 18:
             return False
@@ -127,23 +126,29 @@ class DataExtractor:
         if account_len == 10 and account[0] in '6789':
             return False
         
-        # Get 20 characters before and after for context
+        # Get 30 characters before and after for context
         context_lower = context.lower()
         account_pos = context_lower.find(account)
         if account_pos != -1:
-            start = max(0, account_pos - 20)
-            end = min(len(context_lower), account_pos + len(account) + 20)
+            start = max(0, account_pos - 30)
+            end = min(len(context_lower), account_pos + len(account) + 30)
             surrounding = context_lower[start:end]
             
-            # Reject if surrounded by exclude words
-            for word in self.BANK_ACCOUNT_EXCLUDE_WORDS:
+            # Check for descriptive phrases that indicate it's NOT an actual account number
+            # "16 digit account" - descriptive, not actual number
+            if re.search(r'\d+\s+digit', surrounding):
+                return False
+            
+            # "digit account number" - descriptive
+            if 'digit' in surrounding and 'account' in surrounding:
+                return False
+            
+            # Bank name mentions near number (likely descriptive context)
+            for word in ['sbi', 'hdfc', 'icici', 'axis', 'pnb', 'bob', 'canara']:
                 if word in surrounding:
                     return False
-            
-            # Reject if part of phrases like "16 digit account"
-            if re.search(r'\d+\s*digit', surrounding):
-                return False
         
+        # If we have an actual standalone number (not in descriptive context), accept it
         return True
     
     def _extract_with_ai(self, text: str) -> ScamData:
@@ -163,13 +168,13 @@ class DataExtractor:
             prompt = f"""Extract ONLY actual scam data from: "{text}"
 
 Rules:
-- bank_accounts: ONLY numeric strings of 9-18 digits that are ACTUAL bank account numbers (NOT "16 digit" or bank names like "SBI")
+- bank_accounts: ONLY numeric strings of 9-18 digits that are ACTUAL bank account numbers (NOT phrases like "16 digit account" or bank names like "SBI")
 - upi_ids: Format user@bank (e.g., scammer@paytm)
 - phishing_links: URLs or shortened links
 - phone_numbers: 10-digit Indian numbers starting with 6-9
 
 Return JSON: {{"bank_accounts": [], "upi_ids": [], "phishing_links": [], "phone_numbers": []}}
-Use empty [] if none found. Be precise - do not extract descriptive text."""
+Use empty [] if none found. Be precise - extract only actual data, not descriptions."""
 
             start_time = time.time()
             response = _client.models.generate_content(
@@ -234,9 +239,11 @@ Use empty [] if none found. Be precise - do not extract descriptive text."""
             return self.data
         
         # Step 1: Regex-based extraction (fast, reliable)
-        # Extract bank account numbers with strict validation
+        # Extract bank account numbers with validation
         potential_accounts = re.findall(self.BANK_ACCOUNT_PATTERN, text)
         for account in potential_accounts:
+            # Simplified validation - accept standalone numeric sequences
+            # Only reject if in obvious descriptive context
             if self._is_valid_bank_account(account, text):
                 self.data.add_bank_account(account)
         
