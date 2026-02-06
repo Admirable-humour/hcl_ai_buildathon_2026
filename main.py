@@ -77,20 +77,16 @@ async def verify_auth(x_api_key: Optional[str] = Header(None)) -> bool:
     return True
 
 
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "message": "AI Honeypot System API",
-        "version": "1.0.0",
-        "status": "active"
-    }
-
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+
+@app.get("/ping")
+async def ping():
+    """Fast ping endpoint"""
+    return {"status": "pong"}
 
 
 async def send_callback(session_id: str, extracted_data: dict, message_count: int):
@@ -143,14 +139,14 @@ async def send_callback(session_id: str, extracted_data: dict, message_count: in
         print(f"Error sending callback: {e}")
 
 
-@app.post("/ ", response_model=MessageResponse)
-async def message_endpoint(
+@app.post("/", response_model=MessageResponse)
+async def root_message_endpoint(
     request: MessageRequest,
     authenticated: bool = Depends(verify_auth)
 ) -> MessageResponse:
     """
-    Main message endpoint to handle incoming scammer messages
-    This is the ONLY public endpoint for message processing
+    Main message endpoint at root path
+    Handles incoming scammer messages via POST to /
     
     Args:
         request: MessageRequest containing message and conversation history
