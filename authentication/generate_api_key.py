@@ -6,7 +6,7 @@ Usage:
   
 Output:
   - Raw API key (save securely)
-  - JSON snippet to add/update in Render's API_KEYS_JSON environment variable
+  - JSON snippet to add/update in API_KEYS_JSON environment variable
 """
 
 import sys

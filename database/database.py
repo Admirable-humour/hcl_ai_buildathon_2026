@@ -1,10 +1,5 @@
 """
-SQLite database initialization and models
-
-Edge Cases to Handle:
-- Database file locked (concurrent writes) - handled by SQLite locks
-- Database corruption - implement backup/recovery strategy
-- Disk space full - implement size limits and cleanup policies
+SQLite database initialization and models.
 """
 import sqlite3
 import json

@@ -1,11 +1,6 @@
 """
 Data extraction module for extracting bank details, UPI IDs, phishing links
-Uses both regex patterns and AI-based extraction
-
-Edge Cases to Handle:
-- Gemini API failures - fallback to regex-only extraction
-- Malformed data (partial phone numbers, invalid UPIs) - validation before storing
-- Unicode characters in data - proper encoding/decoding
+Uses both regex patterns and AI-based extraction.
 """
 import re
 import os

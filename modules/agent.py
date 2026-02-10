@@ -1,11 +1,5 @@
 """
-AI conversational agent using Gemini LLM for generating responses
-
-Edge Cases to Handle:
-- Gemini API rate limit - implement exponential backoff
-- API timeout - fallback to template responses
-- Prompt injection attempts - strict system prompt and validation
-- Hallucinations - limit conversation to 20 messages max
+AI conversational agent using Gemini LLM for generating responses.
 """
 import os
 import time
@@ -24,7 +18,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-3-12b-it") #PLEASE ENTER THE COR
 # Timeout configuration
 AGENT_TIMEOUT = 10  # 10 second timeout for agent response generation
 
-# Rate limiting configuration for Gemini 2.0 Flash Free tier
+# Rate limiting configuration for Gemma models Free tier
 # Free tier limits: 30 RPM (requests per minute), 15k TPM (tokens per minute), 14.4k RPD (requests per day)
 # Using 75% of limits as safety margin
 MAX_REQUESTS_PER_MINUTE = 22  # 75% of 30

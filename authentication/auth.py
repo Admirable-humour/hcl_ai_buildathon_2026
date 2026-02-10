@@ -1,11 +1,6 @@
 """
 API authentication and security module
-Handles API key generation, hashing, and verification with security best practices
-
-Edge Cases to Handle:
-- Missing or malformed API_KEYS_JSON environment variable
-- Concurrent access (read-only from env vars, no locking needed)
-- Invalid JSON in environment variable (validation and recovery)
+Handles API key generation, hashing, and verification with security best practices.
 """
 import hashlib
 import secrets

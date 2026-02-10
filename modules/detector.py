@@ -1,10 +1,5 @@
 """
-Scam detection module using hybrid keyword + AI-based detection
-
-Edge Cases to Handle:
-- Gemini API rate limit exceeded - fallback to keyword-only detection
-- Gemini API timeout - use cached results or keyword detection
-- Ambiguous messages - rely on conversation context
+Scam detection module using hybrid keyword + AI-based detection.
 """
 import re
 import os
